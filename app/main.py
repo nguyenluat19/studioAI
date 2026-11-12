@@ -1,18 +1,22 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import SessionLocal
+from .db import SessionLocal, get_db
 from .maintenance import Sweeper
+from . import landing
+from . import legal
 from . import pricing
 from .migrate import upgrade_db
 from .models import SharedVideoLibrary, User
-from .routers import admin, assistant, auth, billing, generate, templates, videotools
+from .routers import admin, assistant, auth, billing, chat, generate, templates, videotools
+from . import featurebilling as featurebilling_mod
 from .security import hash_password
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
@@ -62,7 +66,13 @@ def init() -> None:
                         password_hash=hash_password(settings.admin_password), role="admin"))
             db.commit()
         pricing.seed(db)
+        featurebilling_mod.seed(db)
+        from . import adminmodels
+        adminmodels.sync(db)
+        featurebilling_mod.list_policies(db)   # load models admin đã thêm qua UI vào registry cache
         seed_ai_templates(db)
+        from . import autopipeline
+        autopipeline.recover_interrupted_jobs()   # job dở khi restart -> đánh failed để user thấy
 
 
 @asynccontextmanager
@@ -74,20 +84,70 @@ async def lifespan(_: FastAPI):
     sweeper.stop()
 
 
-app = FastAPI(title="Video Template SaaS", lifespan=lifespan)
-for r in (auth, templates, generate, billing, admin, assistant, videotools):
+# docs_url=None: /docs là trang TÀI LIỆU của sản phẩm (nay chuyển về /#docs);
+# nếu để mặc định, FastAPI gắn Swagger UI vào /docs và người dùng thấy giao diện API.
+app = FastAPI(title="Video Template SaaS", lifespan=lifespan, docs_url=None, redoc_url=None)
+for r in (auth, templates, generate, billing, admin, assistant, videotools, chat):
     app.include_router(r.router)
 
-# Mount only uploads/outputs — never the storage root (it holds the SQLite DB).
-for _d in (settings.uploads_dir, settings.outputs_dir):
+# Mount only uploads/outputs/voices — never the storage root (it holds the SQLite DB).
+for _d in (settings.uploads_dir, settings.outputs_dir, settings.voices_dir):
     _d.mkdir(parents=True, exist_ok=True)
     app.mount(f"/media/{_d.name}", StaticFiles(directory=_d), name=f"media-{_d.name}")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
-@app.get("/")
-def index():
+@app.get("/", include_in_schema=False, response_class=HTMLResponse)
+def index(db: Session = Depends(get_db)):
+    """Trang chủ công khai (landing + nav). Tool nằm ở /dashboard."""
+    from . import support as support_mod
+    return HTMLResponse(landing.render(support=support_mod.get_links(db)),
+                        headers={"Cache-Control": "public, max-age=300"})
+
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard():
+    """Ứng dụng (SPA): đăng nhập + bảng điều khiển."""
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/pricing", include_in_schema=False, response_class=HTMLResponse)
+def pricing_page(db: Session = Depends(get_db)):
+    """Bảng giá công khai — đọc đúng giá admin đặt trong tab Bảng giá."""
+    from . import support as support_mod
+    return HTMLResponse(landing.render_pricing(db, support=support_mod.get_links(db)),
+                        headers={"Cache-Control": "public, max-age=300"})
+
+
+@app.get("/docs", include_in_schema=False)
+def docs_page():
+    """Trang hub riêng đã loại bỏ (trùng với mục Tài liệu & chính sách ở trang chủ) → về /#docs."""
+    return RedirectResponse("/#docs", status_code=301)
+
+
+@app.get("/welcome", include_in_schema=False)
+def welcome():
+    """Cũ rồi → về trang chủ, mục Tài liệu & chính sách."""
+    return RedirectResponse("/#docs", status_code=301)
+
+
+def _legal_response(slug: str, db: Session):
+    from . import support as support_mod
+    html_text = legal.render(slug, support=support_mod.get_links(db))
+    if html_text is None:
+        raise HTTPException(404, "Trang không tồn tại")
+    return HTMLResponse(html_text, headers={"Cache-Control": "public, max-age=300"})
+
+
+def _make_legal_route(slug: str):
+    def _route(db: Session = Depends(get_db)):
+        return _legal_response(slug, db)
+    return _route
+
+
+for _slug in legal.all_routes():
+    app.add_api_route(f"/{_slug}", _make_legal_route(_slug), methods=["GET"],
+                      include_in_schema=False, response_class=HTMLResponse)
 
 
 @app.get("/api/health")

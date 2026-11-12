@@ -8,6 +8,8 @@ import argparse
 import os
 import secrets
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import time
@@ -15,6 +17,110 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ENV = ROOT / ".env"
+
+
+def port_listening(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.6)
+        return s.connect_ex((host, port)) == 0
+
+
+def probe_app(host: str, port: int) -> bool:
+    try:
+        import httpx
+        r = httpx.get(f"http://{host}:{port}/openapi.json", timeout=2.5)
+        return r.json().get("info", {}).get("title") == "Video Template SaaS"
+    except Exception:
+        return False
+
+
+def process_cmdline(pid: int) -> str:
+    if os.name == "nt":
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+                text=True, errors="ignore")
+            return out.strip()
+        except Exception:
+            return ""
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="ignore")
+    except Exception:
+        return ""
+
+
+def looks_like_our_server(host: str, port: int, pid: int) -> bool:
+    if probe_app(host, port):
+        return True
+    cmd = process_cmdline(pid).lower()
+    root = str(ROOT).lower()
+    return "run.py" in cmd and root in cmd.replace("/", "\\")
+
+
+def find_pid_on_port(port: int) -> int | None:
+    if os.name == "nt":
+        try:
+            out = subprocess.check_output(["netstat", "-ano"], text=True, errors="ignore")
+        except Exception:
+            return None
+        for line in out.splitlines():
+            if "LISTENING" not in line.upper():
+                continue
+            parts = line.split()
+            if len(parts) >= 5 and parts[1].rsplit(":", 1)[-1] == str(port):
+                try:
+                    return int(parts[-1])
+                except ValueError:
+                    return None
+        return None
+    try:
+        import psutil
+        for c in psutil.net_connections(kind="tcp"):
+            if c.status == psutil.CONN_LISTEN and c.laddr.port == port and c.pid:
+                return c.pid
+    except Exception:
+        return None
+    return None
+
+
+def stop_pid(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(30):
+        if not Path(f"/proc/{pid}").exists():
+            return
+        time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def ensure_port_available(host: str, port: int) -> bool:
+    if not port_listening(host, port):
+        return True
+    pid = find_pid_on_port(port)
+    if pid and pid != os.getpid() and looks_like_our_server(host, port, pid):
+        print(f"  Port {port} dang bi chiem boi server cu cua tool (PID {pid})."
+              f" Dang dung no va khoi dong lai ban moi...")
+        stop_pid(pid)
+        for _ in range(40):
+            if not port_listening(host, port):
+                return True
+            time.sleep(0.2)
+        print(f"  Khong dung duoc PID {pid}. Chay tay: taskkill /PID {pid} /F")
+        return False
+    owner = f"PID {pid}" if pid else "mot process khac"
+    print(f"  Port {port} dang bi chiem boi {owner} (KHONG phai server cua tool — khong tu kill).")
+    print(f"  Dung no nhu dang, hoac doi cong:  python run.py --port {port + 1}")
+    return False
 
 
 def ensure_env() -> None:
@@ -60,8 +166,10 @@ def main() -> int:
 
     ensure_env()
     os.chdir(ROOT)
-    if not (env_value("INKSTONE_BASE_URL") and env_value("INKSTONE_API_KEY")):
-        print("  ! INKSTONE_BASE_URL / INKSTONE_API_KEY are empty in .env — AI features are off "
+    if not ensure_port_available(args.host, args.port):
+        return 1
+    if not (env_value("VILAO_BASE_URL") and env_value("VILAO_API_KEY")):
+        print("  ! VILAO_BASE_URL / VILAO_API_KEY are empty in .env — AI features are off "
               "(rendering and payments still work).")
 
     children: list[subprocess.Popen] = []

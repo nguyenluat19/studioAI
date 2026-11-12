@@ -1,0 +1,14 @@
+# Cloudflare Tunnel config — copy vào %USERPROFILE%\.cloudflared\config.yml
+# Tunnel tạo bằng:  cloudflared tunnel create studioai
+# (xem deploy/README.md mục 3 để có đầy đủ các lệnh)
+#
+# Thay YOUR_TUNNEL_ID bằng UUID tunnel (tên file trong %USERPROFILE%\.cloudflared\).
+tunnel: YOUR_TUNNEL_ID
+credentials-file: C:\Users\Admin\.cloudflared\YOUR_TUNNEL_ID.json
+
+ingress:
+  # App chính
+  - hostname: studioai.id.vn
+    service: http://127.0.0.1:8001
+  # Bắt buộc: catch-all cuối cùng
+  - service: http_status:404

@@ -18,6 +18,10 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     credits_balance: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)  # user | admin
+    # Xác minh số điện thoại khi đăng ký (OTP qua SMS). phone_verified mặc định True
+    # để tài khoản tạo trước khi có tính năng OTP vẫn đăng nhập được.
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True, unique=True)
+    phone_verified: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -145,3 +149,113 @@ class CreditAdjustment(Base):
     balance_after: Mapped[float] = mapped_column(Float, nullable=False)
     reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CreditLedgerEntry(Base):
+    """Append-only audit trail for wallet changes."""
+    __tablename__ = "credit_ledger"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # topup|spend|refund|adjustment
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    balance_after: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    ref_type: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    ref_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class PipelineJobState(Base):
+    """Snapshot bền vững của pipeline job (chống mất tiến trình khi restart)."""
+    __tablename__ = "pipeline_jobs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)          # job_id
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    idea: Mapped[str] = mapped_column(Text, default="")
+    mode: Mapped[str] = mapped_column(String(32), default="standard")
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    step: Mapped[str] = mapped_column(String(512), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    selections: Mapped[dict] = mapped_column(JSON, default=dict)
+    duration: Mapped[int] = mapped_column(Integer, default=0)
+    aspect_ratio: Mapped[str] = mapped_column(String(8), default="9:16")
+    character_image_url: Mapped[str] = mapped_column(String(512), default="")
+    voice: Mapped[str] = mapped_column(String(32), default="native")
+    use_tts: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    language: Mapped[str] = mapped_column(String(8), default="vi")
+    outfit_image_url: Mapped[str] = mapped_column(String(512), default="")
+    hook_seconds: Mapped[int] = mapped_column(Integer, default=3)
+    usage_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    cancelled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class AppModel(Base):
+    """Model do admin thêm qua giao diện (không cần sửa code để mở rộng).
+    Gateway kiểu MiniMax: POST {base_url}/v2/video_generation + Bearer api_key."""
+    __tablename__ = "app_models"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)          # slug duy nhất
+    name: Mapped[str] = mapped_column(String(120), nullable=False)          # tên hiển thị
+    step: Mapped[str] = mapped_column(String(32), nullable=False)           # llm | image_generate | video_i2v
+    base_url: Mapped[str] = mapped_column(String(512), default="")          # root URL của gateway
+    api_key: Mapped[str] = mapped_column(String(512), default="")           # Bearer key của gateway
+    model_name: Mapped[str] = mapped_column(String(120), default="")        # trường "model" gửi lên API
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    max_clip_seconds: Mapped[int] = mapped_column(Integer, default=15, nullable=False)  # chỉ dùng cho video
+    # Các mốc giây model video hỗ trợ (vd [5,10,20,30]) — user thấy các lựa chọn này khi gen
+    supported_durations: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class ChatMessage(Base):
+    """Lịch sử chat hỗ trợ AI — lưu theo từng tài khoản (user_id), không dùng chung."""
+    __tablename__ = "chat_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)   # user | assistant
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class FeaturePolicy(Base):
+    """Admin-controlled price and free-use allowance per feature and optional model."""
+    __tablename__ = "feature_policies"
+    feature_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model_id: Mapped[str] = mapped_column(String(64), primary_key=True, default="")
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    unit_price: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    free_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class FeatureUsage(Base):
+    """Append-only feature usage, used for lifetime free-trial limits and cost audit."""
+    __tablename__ = "feature_usage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    feature_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    units: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    charge: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    model_unit_cost: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    service_unit_cost: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    is_free: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="reserved", nullable=False)
+    ref_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class PhoneOtp(Base):
+    """Mã OTP xác minh số điện thoại (lưu dạng hash, hết hạn 5 phút)."""
+    __tablename__ = "phone_otps"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    phone: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)

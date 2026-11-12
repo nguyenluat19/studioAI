@@ -1,74 +1,60 @@
-<<<<<<< HEAD
-# VideoAI
-=======
 # Video Template SaaS
 
 Nền tảng SaaS tạo video từ template động: render nhanh bằng FFmpeg, render nâng cao bằng MimicMotion (GPU),
-ví credit tự trừ/hoàn, nạp tiền tự động 100% qua VietQR + webhook SePay/Casso, AI Inkstone (14 model) để viết
-kịch bản / phân tích ảnh / chọn luồng render. Chạy local, dữ liệu trong SQLite.
+ví credit tự trừ/hoàn, nạp tiền tự động 100% qua VietQR + webhook SePay/Casso, và dùng model AI qua gateway
+Vilao.ai (do admin quản lý trong tab **Bảng giá & Quản lý Model** — key lưu trong `.env`) để viết kịch bản / phân
+tích ảnh / chọn luồng render. Chạy local, dữ liệu trong SQLite.
 
 ## Chạy nhanh
 
 ```bash
-git clone -b claude/wizardly-lamport-qfjxhi https://github.com/nguyenluat1905/dashboard
+git clone https://github.com/nguyenluat1905/dashboard
 cd dashboard
 pip install -r requirements.txt
 python run.py
 ```
 
 `run.py` tự tạo `.env` (sinh `SECRET_KEY` và mật khẩu admin, in ra màn hình), kiểm tra FFmpeg rồi mở
-**http://127.0.0.1:8000**. Việc duy nhất bạn phải làm: mở `.env`, điền
+**http://127.0.0.1:8000**. Nếu cổng bạn chọn đang bị server cũ của tool chiếm, `run.py` tự nhận diện
+(qua `/openapi.json` hoặc cmdline của process), tự dừng nó và chạy bản mới — không còn lỗi 10048; nếu cổng bị
+chiếm bởi process lạ (không phải server của tool) thì `run.py` cảnh báo và không kill, bạn dùng cổng khác. Việc duy nhất bạn phải làm: mở `.env`, điền
 
 ```
-INKSTONE_BASE_URL=<địa chỉ API Inkstone, dạng https://.../v1>
-INKSTONE_API_KEY=<key chính của bạn>
+VILAO_BASE_URL=<địa chỉ API gateway, dạng https://.../v1>
+VILAO_API_KEY=<key chính của bạn>
 ```
 
-rồi chạy lại `python run.py`. Một key chính dùng cho cả 14 model; tên model đã có sẵn trong code.
+rồi chạy lại `python run.py`. Một key chính dùng cho mọi model do admin thêm trong giao diện
+**Bảng giá & Quản lý Model** — không có model built-in nào trong code; key lưu `.env` dạng `MODEL_<ID>_API_KEY`.
 Chưa điền thì render và nạp tiền vẫn chạy, chỉ phần AI tắt (tự chọn luồng sẽ dùng quy tắc dự phòng).
 
 Cần cài sẵn **FFmpeg** (`brew install ffmpeg` / `apt install ffmpeg` / ffmpeg.org cho Windows).
 
-## Model AI (Intern Inkstone)
+## Model AI (gateway Vilao + admin-managed)
 
-**Đa phương thức (ảnh + tool calling) — dùng cho phân tích ảnh**
+Không có model built-in trong code — mọi model do admin thêm ở tab **Bảng giá & Quản lý Model** (`POST /api/admin/models`):
+tên hiển thị, bước (LLM / gen ảnh / gen video), `base_url`, `api_key` (key lưu `.env` dạng `MODEL_<ID>_API_KEY`),
+tên model gửi qua API, mốc giây hỗ trợ. Key **không bao giờ lưu trong DB** và không bao giờ trả ra API (masked key).
 
-| Model ID | Tên | Vai trò |
-|---|---|---|
-| `deepseek-v4-flash-vision` | DeepSeek-V4-Flash-Vision | Ngữ cảnh 1M, tool calling, tư duy sâu; phân tích ảnh gameplay/nội dung thị giác |
-| `kimi-k2.6` | Kimi-K2.6 | Ngữ cảnh 256K, text+ảnh, tool calling, tư duy sâu; tổng hợp kịch bản |
-| `qwen3.8-27b` | Qwen3.8-27B | Đa phương thức text+ảnh, tool calling, tư duy sâu |
-| `Agents-A1` | Agents-A1 | Đa modal, tool calling, suy luận khoa học |
-| `Sage-A1.5` | Sage-A1.5 | Đa modal, tool calling, suy luận khoa học |
-| `intern-s2` | 书生-S2 | Đa phương thức chuyên xử lý không gian hình ảnh và văn bản |
-| `deepseek-v4.1-flash-1017` | DeepSeek-V4.1-Flash-1017 | Đa modal tốc độ cao, ngữ cảnh lớn |
+Pipeline 1-click (tab **Trợ lý AI — Tạo Clip Phôi & Ảnh Phân Cảnh**) dùng các model này theo từng bước:
 
-**LLM / lập luận — dùng cho viết kịch bản**
+1. **LLM** — viết kịch bản / prompt từ ý tưởng (storyboard bám mốc giây model video: Veo 4/6/8 giây).
+2. **Gen ảnh** — keyframe cho từng cảnh (vilao `/v1/images/generations`).
+3. **Gen video** — Veo (hoặc model video admin khác); phí video tính theo **request** (1 clip = 1 lần giá model).
 
-| Model ID | Tên | Vai trò |
-|---|---|---|
-| `deepseek-v4-pro-0813` | DeepSeek-V4-Pro-0813 | Ngữ cảnh 1M; sinh prompt, lời bình, kịch bản video |
-| `deepseek-v4-flash-0731` | DeepSeek-V4-Flash-0731 | Ngữ cảnh 1M; sinh prompt, lời bình, kịch bản video (nhanh) |
-| `glm-5.3` | GLM-5.3 | Tư duy sâu, tool calling, tối ưu workflow |
-| `minimax-m3` | MiniMax-M3 | Tư duy sâu, tool calling, tối ưu workflow |
-| `Atria-Dawn` | Atria-Dawn | Suy luận logic, tính toán kịch bản phức tạp |
-| `Atria-Dawn-Preview` | Atria-Dawn-Preview | Suy luận logic, tính toán kịch bản phức tạp (preview) |
+Các chế độ tạo trong pipeline: `standard` (kịch bản → keyframe → clip phôi), `review_outfit` (biến hình trang phục:
+hook → biến hình → review → chi tiết sản phẩm), `images_only` (chỉ gen ảnh, không gen video), `text_to_video`
+(1 clip từ text prompt), `image_to_video` (1 clip i2v từ ảnh nhân vật).
 
-**Ra quyết định cấu trúc — tự chọn luồng render**
-
-| Model ID | Tên | Vai trò |
-|---|---|---|
-| `intern-decision-4b` | 书生-Decision-4B | Quyết định cấu trúc (SystemOne): chọn luồng render nhanh hay nâng cao |
-
-- Gọi `INKSTONE_BASE_URL/chat/completions` (chuẩn OpenAI) với `Authorization: Bearer <key>`. Nếu Inkstone dùng
-  đường dẫn khác, sửa hàm `chat()` trong `app/ai.py`.
-- Model được chọn lỗi → tự thử tối đa 2 model khác cùng nhóm; kết quả cho biết model nào đã trả lời.
-- Mặc định: kịch bản `deepseek-v4-pro-0813`, ảnh `deepseek-v4-flash-vision`, điều hướng `intern-decision-4b`
-  (sửa ở cuối `app/config.py`). Danh sách + trạng thái cấu hình: `GET /api/ai/models`.
+- Model admin tự hiện trong ô chọn người dùng kèm trạng thái 🟢/🔴; model bị tắt không chọn được và bị chặn 403 phía server.
+- Phí LLM/ảnh/video theo **request** — đơn vị `credit / request`; video = 1 request mỗi cảnh.
+- Tab **Bảng giá & Quản lý Model** hiển thị giá gốc provider (☁️ Giá gốc API) và điểm hoà vốn (≥ Hoà vốn) từng model,
+  kèm nút 📈 Điền giá ≥ Hoà vốn giúp admin điền giá tối thiểu (chưa tự lưu — admin duyệt rồi Lưu tất cả).
+- Cấu hình model nào là quyết định của bạn — xem tab đó để biết model hiện có và đang bật.
 
 ## Video AI: MiniMax-H3 (+ MimicMotion cho video nhảy)
 
-Điền `MINIMAX_API_KEY` trong `.env` (key riêng của MiniMax, khác key Inkstone). Hai template dựng sẵn xuất hiện
+Điền `MINIMAX_API_KEY` trong `.env` (key riêng của MiniMax, khác key Vilao). Hai template dựng sẵn xuất hiện
 trong Thư viện:
 
 | Template | Việc xảy ra | Credit |
@@ -98,14 +84,14 @@ bật/tắt, giá mặc định, giá vốn, biên lợi nhuận, nút Lưu / M�
 | Nhóm | Mục | Đơn vị |
 |---|---|---|
 | Render | Render nhanh (FFmpeg); MimicMotion | credit / video |
-| Model tạo video | MiniMax-H3 768P; MiniMax-H3 2K | credit / **giây** |
-| Model Inkstone (14 model) | từng model: hình ảnh, ngôn ngữ, điều hướng | credit / lần gọi (mặc định 0 = miễn phí) |
+| Model tạo video | MiniMax-H3 768P; MiniMax-H3 2K | credit / **request** |
+| Model admin (LLM / gen ảnh / gen video) | từng model do admin thêm | credit / **request** |
 
 - Đồng bộ ngay: form tạo video, danh sách model ở tab Trợ lý AI, mức trừ credit đều đọc từ bảng này. Video nhảy =
   giá H3 × số giây + giá MimicMotion. Chọn "tự động" mà AI điều hướng được gọi thì cộng thêm giá của
-  `intern-decision-4b`.
+  model điều hướng do admin cấu hình.
 - Giá mới chỉ áp cho lượt **sau đó**; job đã tạo giữ giá đã trừ, lỗi thì hoàn đúng số đó (đổi giá không làm sai tiền).
-- Model Inkstone: trả giá của model bạn chọn; không có câu trả lời (mọi model lỗi) thì hoàn lại. Tắt "bật" thì model đó
+- Model admin: trả giá của model bạn chọn theo **1 request**; mọi model lỗi thì hoàn lại. Tắt "bật" thì model đó
   không dùng được và không bao giờ được chọn làm phương án dự phòng.
 - Biên lợi nhuận tính từ **tỉ giá** và **giá trị 1 credit** (đặt ngay trên tab, cùng chỗ với mức nạp tối thiểu), chỉ hiện khi biết giá vốn nhà cung cấp
   (hiện có cho MiniMax-H3: $0,08/s ở 768P, $0,13/s ở 2K; MimicMotion chạy GPU của bạn nên không có giá vốn).
@@ -163,16 +149,16 @@ Celery (`ai` và `gpu`).
 ## Docker (tuỳ chọn)
 ```bash
 python run.py --init                  # tạo .env
-docker compose up --build             # web + Redis;  thêm --profile worker để có worker video AI
+docker compose up --build             # web + Redis trên port 8001;  thêm --profile worker để có worker video AI
 ```
 MimicMotion cần GPU: chạy worker trên máy chủ (`celery -A app.tasks.celery_app worker -n gpu@%h -Q gpu -c 1`) trỏ vào Redis
 `127.0.0.1:6379` do compose mở ra. *Lưu ý: file Docker chưa được build thử (môi trường phát triển không có Docker daemon).*
 
 ## Nạp tiền thật
-Mở server ra internet (ví dụ `ngrok http 8000`), đặt webhook của SePay/Casso tới `/api/webhooks/payment`, điền
+Mở server ra internet (ví dụ `ngrok http 8001`), đặt webhook của SePay/Casso tới `/api/webhooks/payment`, điền
 `BANK_BIN`, `BANK_ACCOUNT_NO`, `BANK_ACCOUNT_NAME`, `SEPAY_API_KEY`/`CASSO_SECURE_TOKEN`. Thử không cần ngân hàng:
 ```bash
-curl -X POST localhost:8000/api/webhooks/payment -H "Authorization: Apikey <SEPAY_API_KEY>" \
+curl -X POST localhost:8001/api/webhooks/payment -H "Authorization: Apikey <SEPAY_API_KEY>" \
   -H "Content-Type: application/json" -d '{"transferType":"in","transferAmount":<số tiền đã tạo mã>,"content":"NAPxxxxxxxx"}'
 ```
 
@@ -192,11 +178,12 @@ nhận diện tự động. Muốn làm lại từ đầu: tắt server, xoá `s
 
 ## Bảo mật & vận hành
 `APP_ENV=production` từ chối khởi động nếu `SECRET_KEY` yếu/mặc định hoặc thiếu `ADMIN_PASSWORD`. Đăng nhập sai
-quá `LOGIN_MAX_FAILURES` lần/10 phút bị khoá tạm; giới hạn đăng ký `REGISTER_PER_HOUR`/IP. Chỉ `uploads/` và `outputs/`
+quá `LOGIN_MAX_FAILURES` lần/10 phút bị khoá tạm; giới hạn đăng ký `REGISTER_PER_HOUR`/IP. `uploads/`, `outputs/` và `voices/`
 được phục vụ qua `/media`.
 
 ## Test
-`pip install -r requirements-dev.txt && pytest` (155 test; test thiếu công cụ sẽ tự bỏ qua).
+`pip install -r requirements-dev.txt && pytest` (**168 passed, 15 skipped, 0 errors** — mới nhất 2026-11-09; test thiếu
+redis-server/celery thì tự **skip**, không báo lỗi).
 
 | Nhóm | Phạm vi | Cần |
 |---|---|---|
@@ -205,9 +192,11 @@ quá `LOGIN_MAX_FAILURES` lần/10 phút bị khoá tạm; giới hạn đăng k
 | `test_promotions` | khuyến mãi: ngưỡng, nhiều mức, lịch, không cộng dồn, chốt lúc tạo QR, làm tròn, CRUD, validate |
 | `test_topup_amount` | nạp số tiền tự do: mức tối thiểu, quy đổi, tối đa, đổi mức/tỉ lệ, hết hạn |
 | `test_pricing` | bảng giá admin: phân quyền, validate, nhật ký, đồng bộ với mọi khoản trừ, hoàn đúng giá cũ, tắt model/độ phân giải |
-| `test_aivideo` | MiniMax-H3 qua server giả: tạo/thăm dò/tải, API kiểu cũ, lỗi + hoàn tiền, dance 2 giai đoạn + ghép nhạc, giá |
+| `test_admin_models`, `test_reuse_envkeys` | admin CRUD model, key vào `.env` (`MODEL_<ID>_API_KEY`), `/api/generations/{id}/reuse` |
+| `test_vilao_image`, `test_character_consistency`, `test_review_outfit`, `test_batch`, `test_raw_clips` | pipeline 1-click: keyframe qua Vilao, review_outfit, hàng loạt (ZIP), clip phôi |
+| `test_tts`, `test_voice` | TTS cảm xúc edge-tts (~28 tag), clone giọng (lưu/nghe/xoá mẫu) |
+| `test_billing_provider` | kéo giá gốc từ `GET {base_url}/models` của provider vào tab admin |
 | `test_e2e` | Redis + 2 worker Celery (`ai`/`gpu`) + uvicorn thật, MimicMotion giả cùng giao diện dòng lệnh, Redis sập | ffmpeg, redis-server, celery |
-| `test_ui` | Chromium thật: đăng ký → QR đếm ngược/hết hạn → duyệt thư viện → người khác tuỳ chỉnh → tab AI | playwright + chromium |
+| `test_ui` | Chromium thật: đăng ký → QR đếm ngược/hết hạn → duyệt thư viện → người khác tuỳ chỉnh → tab AI (hiện **SKIP** khi máy thiếu redis/celery/chromium) | playwright + chromium |
 
-Chưa kiểm chứng với dịch vụ thật: MimicMotion (GPU), MiniMax-H3, Inkstone, SePay/Casso, ảnh QR của img.vietqr.io, Docker build.
->>>>>>> d8b5e48 (chuẩn bị deploy Railway)
+Chưa kiểm chứng với dịch vụ thật: MimicMotion (GPU), MiniMax-H3 / Veo / gateway Vilao, SePay/Casso, ảnh QR của img.vietqr.io, Docker build.

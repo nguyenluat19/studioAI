@@ -1,0 +1,82 @@
+# 🗺️ Roadmap Nâng Cấp Hệ Thống
+
+## Trạng thái (cập nhật 2026-11-11 cuối ngày — phiên đợt 2→6)
+
+- **Backend**: FastAPI (Python), SQLite + Alembic migrations (**0001 → 0013**), Celery/Redis (tùy chọn — chưa có Redis trong máy dev)
+- **Frontend**: Single HTML (`static/index.html`) - Vanilla JS
+- **Models**: User, SharedVideoLibrary, GenerationHistory, Transaction, PricingItem, ActivityLog, AppModel, Promotions, WebhookLog, CreditLedgerEntry, PipelineJobState, ChatMessage, PhoneOtp
+- **AI**: gateway Vilao.ai (mọi model do admin thêm; LLM/gen ảnh/gen video, key `MODEL_<ID>_API_KEY` trong `.env`); MiniMax-H3 (legacy, optional). KHÔNG còn built-in models.
+- **Cấu trúc site mới (2026-11-11):** `/` = landing công khai · `/dashboard` = tool · `/pricing` (render động từ DB admin) · `/terms`…`/contact` (7 trang chính sách) · `/#docs` = mục Tài liệu & chính sách trên trang chủ (trang `/docs` riêng đã bỏ).
+- **Legal & chat:** 7 trang chính sách server-side; chat AI hỗ trợ (bong bóng 💬) lưu lịch sử **riêng từng tài khoản** vào DB.
+- **Storage tách theo tài khoản:** `uploads/u<id>/` `outputs/u<id>/` `voices/u<id>/`.
+- **Đăng ký mới:** bắt buộc SĐT + OTP 6 số qua SMS (ESMS.vn, migration 0013); `APP_ENV=production` + chưa cấu hình ESMS → đăng ký 503.
+- **Deploy:** **Docker image `web:latest` build ~11:30 sáng phục vụ domain** — toàn bộ code chiều nay CHƯA LIVE (xem `fix_bug` mục 8 + TỔNG HỢP). Local code đầy đủ tính năng.
+- **Jobs**: pipeline jobs lưu bền vững vào SQLite (`pipeline_jobs`); batch jobs vẫn in-memory.
+
+- **Backend**: FastAPI (Python), SQLite + Alembic migrations, Celery/Redis (tùy chọn — chưa có Redis → AI video chạy in-process)
+- **Frontend**: Single HTML (`static/index.html`) - Vanilla JS
+- **Models**: User, SharedVideoLibrary, GenerationHistory, Transaction, PricingItem, ActivityLog, AppModel, Promotions, WebhookLog
+- **AI**: gateway Vilao.ai (mọi model do admin thêm; LLM/gen ảnh/gen video, key `MODEL_<ID>_API_KEY` trong `.env`); MiniMax-H3 (legacy, optional). KHÔNG còn built-in models.
+- **Jobs**: pipeline jobs **đã lưu bền vững vào SQLite** (bảng `pipeline_jobs`, snapshot + rehydrate + `recover_interrupted_jobs`); batch jobs vẫn **in-memory** (restart mất tiến trình batch).
+
+---
+
+## ✅ Yêu cầu 1 — Redesign toàn bộ UX/UI
+Dark mode premium, glassmorphism, sidebar; đã redesign 2 lần (2026-11-05: Liquid Glass gold). Detail: xem `fix_bug`.
+
+## ✅ Yêu cầu 2 — Activity Log (Lịch sử hoạt động)
+Model `ActivityLog` (`app/models.py`), ghi qua `app/activity.py`, đọc qua `GET /api/auth/me/activity` (`app/routers/auth.py`). UI: tab **Nhật ký tài khoản**.
+
+## ✅ Yêu cầu 3 — Template của tôi: lưu thành phẩm theo danh mục
+`user_category` trong GenerationHistory; `POST /api/generations/{gid}/reuse` (`app/routers/generate.py`) tạo request mới từ input cũ (owner-only, trừ credit như `/generate`). UI: lọc danh mục, xem chi tiết, nút "Dùng lại"/"Sửa & Dùng lại", "Template của tôi" kèm **clip phôi** (tool chỉ tạo clip phôi — khách tự edit) và kịch bản/ảnh từng cảnh.
+
+## ✅ Yêu cầu 4 — Thư viện: tái sử dụng template (tính phí bình thường)
+Click library item → form prefill đầy đủ (edit-before-submit), sửa mọi layer trước khi gửi, credit tính bình thường.
+
+## ✅ Yêu cầu 5 — Trợ lý AI: Luồng gen video hoàn chỉnh
+**Luồng thực tế (2026-11-09):**
+
+```
+[1] User nhập ý tưởng (chọn chế độ: standard | review_outfit | images_only | text_to_video | image_to_video)
+    ↓
+[2] LLM viết kịch bản / prompt (standard: storyboard bám mốc giây model video;
+    review_outfit: Hook → Biến hình → Review → Chi tiết sản phẩm;
+    images_only: không gen video; text_to_video / image_to_video: 1 clip, không storyboard)
+    ↓
+[3] Gen ảnh keyframe từng cảnh (vilao `/v1/images/generations`) — chế độ standard/review_outfit
+    ↓
+[4] Gen video từng cảnh (Veo / model video admin) — 1 request mỗi clip
+    ↓
+[5] Trả kết quả: prompt | model | ảnh | clip phôi + TTS từng cảnh (emotion engine)
+```
+
+**Backend**: `POST /api/assistant/pipeline` (nhận `mode`, `character_image_url`, `outfit_image_url`, `hook_seconds`, …),
+`POST /api/assistant/pipeline/{job_id}/retry-failed`, `POST /api/assistant/estimate`,
+batch `POST /api/assistant/batch` (upload nhiều ảnh / ZIP, tuần tự, ETA, cancel).
+**Modes**: `standard`, `review_outfit`, `images_only`, `text_to_video`, `image_to_video`,
+`copy_motion` (CHƯA LÀM — chờ chọn engine motion transfer, tính bằng cách tách clip dài thành nhiều đoạn).
+
+## ✅ Yêu cầu 6 — Tải video + Dịch thuật / Subtitle
+**Thực tế**: `POST /api/video/download` (yt-dlp, TikWM fallback), `POST /api/video/resolve`,
+`POST /api/video/batch-download`, `GET /api/video/download-progress/{job_id}`,
+`POST /api/video/transcribe` (faster-whisper **mặc định medium**, VAD mềm, **vá khoảng lặng bị VAD cắt**, LLM sửa lỗi nghe + dịch theo ngữ cảnh 12 ngôn ngữ — `app/subtitles.py`), `POST /api/video/process` (ASS subtitle + blur watermark boxblur + **lồng tiếng TTS** tuỳ chọn).
+`HUGGINGFACE_API_KEY` không còn bắt buộc (HF 402 → fallback Google Translate free; LLM dịch là engine chính).
+
+## ✅ Yêu cầu 7 — Giá dịch vụ thay mô tả model
+`GET /api/ai/models` trả về `price`, `enabled`, `supported_durations`; UI hiển thị giá trước khi gen;
+`POST /api/assistant/estimate` tính tổng credit; billing video theo **request** (1 clip = 1 lần giá model).
+
+---
+
+## Backlog thực tế (cập nhật 2026-11-11) — chi tiết & trạng thái trong `fix_bug`
+
+1. **Giá tool ≥ hoà vốn** — Veo 3 (5.7) / omni-flash (10.05) đang dưới hoà vốn (đang lỗ). Admin quyết.
+2. **Test live 1 lần** (review outfit, batch, lip-sync, review_outfit) — tốn credit, cần user duyệt.
+3. ~~Clone giọng THẬT~~ **code xong 2026-11-09** — ElevenLabs. Chưa gen thật — cần `ELEVENLABS_API_KEY` + duyệt credit.
+4. ~~Lưu pipeline jobs vào DB~~ **✅ 2026-11-09** — bảng `pipeline_jobs` (migration 0010). Batch jobs vẫn in-memory.
+5. ~~Nút "Thử lại sản phẩm lỗi" trong batch~~ **✅ 2026-11-09** — `POST /api/assistant/batch/{id}/retry-failed`.
+6. ~~`tests/test_ui.py` viết lại~~ **✅ 2026-11-10** — 3 journey tự chứa, chạy thật Chromium.
+7. **Copy hành động (motion transfer)** — chưa có model trong gateway; GPU 4GB không chạy MimicMotion; cần user chọn engine (Segmind/PixVerse Mimic, Kling 3.0 Motion Control, fal.ai…) + tách video >20–30s thành clip 5–10s.
+8. **Dịch phụ đề** — module `app/subtitles.py` (default medium + gap repair + LLM refine/translate); **LLM mới là engine dịch chính** (chưa gọi thật — tốn credit); HF vẫn 402; Google Translate free fallback vẫn hoạt động.
+9. **Rebuild domain** — Docker image cũ (~11:30) đang live, chưa có lệnh rebuild từ user.
+10. **ESMS_API_KEY/ESMS_API_SECRET** — cần đăng ký ESMS.vn để đăng ký chạy được trên domain.

@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8.0
+playwright>=1.40   # UI test; use an existing Chromium or `playwright install chromium`

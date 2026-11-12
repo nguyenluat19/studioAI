@@ -143,11 +143,9 @@ def gen_out(g: GenerationHistory) -> dict:
             "error_message": g.error_message, "created_at": g.created_at}
 
 
-@router.post("/generate")
-def generate(body: GenerateIn, bg: BackgroundTasks, p: Prepared = Depends(credit_guard),
-             db: Session = Depends(get_db)):
+def _create_and_dispatch(body: GenerateIn, bg: BackgroundTasks, p: Prepared, db: Session):
     # The guard's check is advisory; the guarded UPDATE is what prevents overdraft under concurrency.
-    if not credits.charge(db, p.user.id, p.cost):
+    if not credits.charge(db, p.user.id, p.cost, kind="spend", reason=f"Render video ({p.render_type})", ref_type="generation", ref_id=p.template.id):
         db.rollback()
         raise HTTPException(402, detail={"message": "Không đủ credit, vui lòng nạp thêm", "required": p.cost})
     title = body.title.strip() or f"Tác phẩm #{p.template.id}"
@@ -182,6 +180,12 @@ def generate(body: GenerateIn, bg: BackgroundTasks, p: Prepared = Depends(credit
     return gen_out(gen)
 
 
+@router.post("/generate")
+def generate(body: GenerateIn, bg: BackgroundTasks, p: Prepared = Depends(credit_guard),
+             db: Session = Depends(get_db)):
+    return _create_and_dispatch(body, bg, p, db)
+
+
 @router.get("/pricing")
 def get_pricing(db: Session = Depends(get_db), user: User = Depends(current_user)):
     """Credit prices so the UI can show a cost before the user presses Generate."""
@@ -202,7 +206,21 @@ def history(category: str | None = None, db: Session = Depends(get_db), user: Us
     if category and category.strip():
         q = q.where(GenerationHistory.user_category == category.strip())
     q = q.order_by(GenerationHistory.id.desc()).limit(100)
-    return [gen_out(g) for g in db.scalars(q)]
+    gens = list(db.scalars(q))
+    tpl_ids = {g.template_id for g in gens}
+    ratios = {}
+    if tpl_ids:
+        for tid, schema in db.execute(
+            select(SharedVideoLibrary.id, SharedVideoLibrary.template_schema)
+            .where(SharedVideoLibrary.id.in_(tpl_ids))
+        ):
+            ratios[tid] = (schema or {}).get("aspect_ratio") or "9:16"
+    out = []
+    for g in gens:
+        d = gen_out(g)
+        d["aspect_ratio"] = ratios.get(g.template_id, "9:16")
+        out.append(d)
+    return out
 
 
 @router.get("/generations/categories")
@@ -234,9 +252,51 @@ def update_generation(gid: int, body: UpdateGenerationIn, db: Session = Depends(
     return gen_out(g)
 
 
+@router.delete("/generations/{gid}")
+def delete_generation(gid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    g = db.get(GenerationHistory, gid)
+    if not g or (g.user_id != user.id and user.role != "admin"):
+        raise HTTPException(404, "Không tìm thấy tác phẩm")
+    title = g.title
+    db.delete(g)
+    db.commit()
+    log_activity(db, user.id, "generation_delete", details={"gen_id": gid, "title": title})
+    return {"ok": True}
+
+
 @router.get("/generations/{gid}")
 def get_generation(gid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     g = db.get(GenerationHistory, gid)
     if not g or (g.user_id != user.id and user.role != "admin"):
         raise HTTPException(404, "Không tìm thấy")
     return gen_out(g)
+
+
+class ReuseGenerationIn(BaseModel):
+    """Optional overrides for "Sửa & Dùng lại"; empty body = reuse exactly the old inputs."""
+    input_data: dict | None = None
+    title: str | None = None
+    user_category: str | None = None
+    share_to_library: bool | None = None
+
+
+@router.post("/generations/{gid}/reuse")
+def reuse_generation(gid: int, bg: BackgroundTasks, body: ReuseGenerationIn | None = None,
+                     db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Create a new render job from a previous generation's template + inputs (Req 3)."""
+    g = db.get(GenerationHistory, gid)
+    if not g or g.user_id != user.id:
+        raise HTTPException(404, "Không tìm thấy tác phẩm")
+    old_inputs = {k: v for k, v in (g.input_data or {}).items() if not k.startswith("_")}
+    payload = GenerateIn(
+        template_id=g.template_id,
+        render_type=g.render_type,
+        input_data={**old_inputs, **((body.input_data or {}) if body else {})},
+        share_to_library=(body.share_to_library if body and body.share_to_library is not None
+                          else g.share_to_library),
+        user_category=((body.user_category if body and body.user_category is not None
+                        else g.user_category) or "Mặc định"),
+        title=((body.title if body and body.title is not None else g.title) or ""),
+    )
+    p = credit_guard(payload, user, db)
+    return _create_and_dispatch(payload, bg, p, db)

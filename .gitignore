@@ -1,4 +1,5 @@
 .env
+.env.bak
 storage/
 vendor/
 __pycache__/

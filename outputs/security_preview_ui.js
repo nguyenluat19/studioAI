@@ -1,0 +1,4055 @@
+
+/* ── UTILS ── */
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=s=>document.querySelector(s);
+const $$=s=>[...document.querySelectorAll(s)];
+const fmtD=d=>new Date(d).toLocaleString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+const fmtV=n=>Number(n).toLocaleString('vi-VN')+'đ';
+const fmtT=n=>`${Math.floor(n/60)}:${String(Math.floor(n%60)).padStart(2,'0')}`;
+// Skeleton shimmer placeholder khi trang đang tải dữ liệu (thay spinner đơn điệu)
+function skeletonGrid(n){ n=n||6; let h='<div class="sk-grid">'; for(let i=0;i<n;i++) h+='<div class="sk-card"><div class="sk-med"></div><div class="sk-line"></div><div class="sk-line short"></div></div>'; return h+'</div>'; }
+// Hiển thị tên + kích thước file ngay khi chọn (kéo-thả cũng kích hoạt)
+function wireFileInfo(inputId){
+  const input=document.getElementById(inputId); if(!input) return;
+  let info=input.parentElement.querySelector('.file-info');
+  if(!info){ info=document.createElement('div'); info.className='xs mu mt2 file-info'; input.parentElement.appendChild(info); }
+  input.addEventListener('change',()=>{
+    const fs=[...input.files];
+    if(!fs.length){ info.textContent=''; return; }
+    info.textContent='📎 '+fs.map(f=>f.name+' ('+(f.size>1048576?(f.size/1048576).toFixed(1)+'MB':Math.max(1,Math.round(f.size/1024))+'KB')+')').join(', ').slice(0,300);
+  });
+}
+
+// Drag & drop file onto the input's .field container; fires input's change event.
+function attachDrop(inputId, maxFiles){
+  const input=document.getElementById(inputId); if(!input) return;
+  const zone=input.closest('.field')||input.parentElement||input;
+  ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('drop-hover');}));
+  ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('drop-hover');}));
+  zone.addEventListener('drop',e=>{
+    e.preventDefault();
+    const files=e.dataTransfer && e.dataTransfer.files;
+    if(!files || !files.length) return;
+    const dt=new DataTransfer();
+    const limit=maxFiles||(input.multiple?20:1);
+    for(let i=0;i<Math.min(files.length,limit);i++) dt.items.add(files[i]);
+    input.files=dt.files;
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+  });
+}
+
+let token=localStorage.token||'',me=null,tab=localStorage.tab||'library',pollT=null;
+
+/* ── API ── */
+async function api(path,opt={}){
+  const h={...(opt.headers||{})};
+  if(token)h.Authorization='Bearer '+token;
+  if(opt.json){h['Content-Type']='application/json';opt.body=JSON.stringify(opt.json)}
+  const r=await fetch(path,{...opt,headers:h});
+  let d=null;try{d=await r.json()}catch{}
+  if(!r.ok){
+    const m=d?.detail?.message||d?.detail||r.statusText;
+    const err=new Error(typeof m==='string'?m:JSON.stringify(m));
+    err.detail=d?.detail||null;
+    throw err;
+  }
+  return d;
+}
+const post=(p,j)=>api(p,{method:'POST',json:j});
+const patch=(p,j)=>api(p,{method:'PATCH',json:j});
+const put=(p,j)=>api(p,{method:'PUT',json:j});
+const del=p=>api(p,{method:'DELETE'});
+async function upload(file){const f=new FormData();f.append('file',file);return(await api('/api/uploads',{method:'POST',body:f})).url}
+
+/* ── TOAST ── */
+function toast(msg,type='i'){
+  const ic={o:'✅',e:'❌',i:'💬'};
+  const el=document.createElement('div');
+  el.className=`ti${type==='o'?' ti-ok':type==='e'?' ti-er':''}`;
+  el.innerHTML=`<span>${ic[type]||ic.i}</span><span>${esc(msg)}</span>`;
+  $('#toast').appendChild(el);
+  setTimeout(()=>el.style.opacity='0',3500);
+  setTimeout(()=>el.remove(),4000);
+}
+const tok=m=>toast(m,'o'),ter=m=>toast(m,'e');
+
+/* ── BOOT ── */
+async function boot(){
+  if(token){try{me=await api('/api/auth/me')}catch{token='';localStorage.token=''}}
+  if(!localStorage.tab)localStorage.tab='library';
+  tab=localStorage.tab;
+  render();
+}
+
+function render(){
+  if(pollT){clearTimeout(pollT);pollT=null}
+  const fab=$('#chat-fab'), panel=$('#chat-panel');
+  if(!me){
+    // Khách chưa đăng nhập -> về trang chủ (/?login=1 mới hiện form đăng nhập)
+    if(!/[?&]login=1/.test(location.search)){ location.replace('/'); return; }
+    $('#auth-wrap').classList.remove('hide');$('#app-wrap').classList.add('hide');
+    if(fab) fab.style.display='none'; if(panel) panel.classList.add('hide');
+    return
+  }
+  $('#auth-wrap').classList.add('hide');$('#app-wrap').classList.remove('hide');
+  if(fab) fab.style.display='';
+  renderSb();renderPage();
+}
+
+function refreshBar(){
+  if(!me)return;
+  $('#u-av').textContent=me.username[0].toUpperCase();
+  $('#u-name').textContent=me.username;
+  $('#u-cr').textContent=me.credits_balance.toLocaleString('vi')+' credit';
+}
+async function refreshMe(){me=await api('/api/auth/me');refreshBar()}
+
+/* ── AUTH UI ── */
+(()=>{
+  let isLi=true;
+  const setM=li=>{
+    isLi=li;
+    $('#tab-li').classList.toggle('on',li);
+    $('#tab-rg').classList.toggle('on',!li);
+    $('#e-field').classList.toggle('hide',li);
+    $('#a-sub').textContent=li?'Đăng nhập':'Đăng ký';
+    const h1=$('#auth-h1-title'), sub=$('#auth-sub');
+    if(h1) h1.textContent=li?'Đăng nhập':'Đăng ký';
+    if(sub) sub.textContent=li?'Tiếp tục vào bảng điều khiển của bạn':'Tạo tài khoản trong 30 giây';
+  };
+  $('#tab-li').onclick=()=>setM(true);
+  $('#tab-rg').onclick=()=>setM(false);
+  $('#a-sub').onclick=async()=>{
+    try{
+      const body={username:$('#a-u').value,password:$('#a-p').value};
+      if(!isLi){body.email=$('#a-e').value;}
+      const d=await post(isLi?'/api/auth/login':'/api/auth/register',body);
+      token=d.token;localStorage.token=token;me=d.user;_chatLoaded=false;_chatReset();
+      try{history.replaceState({},'','/dashboard')}catch(e){}
+      render();
+    }catch(e){ ter(e.message); }
+  };
+  ['a-u','a-p','a-e'].forEach(id=>{const el=$('#'+id);if(el)el.onkeydown=e=>{if(e.key==='Enter')$('#a-sub').click()}});
+  // Mở thẳng tab đăng ký khi vào từ nút "Đăng ký" trên trang chủ
+  if(/[?&]tab=register/.test(location.search)) setM(false);
+})();
+$('#btn-out').onclick=()=>{token='';localStorage.token='';me=null;tab='library';_chatLoaded=false;_chatReset();render()};
+
+/* ── PROFILE MODAL (sửa thông tin đăng ký) ── */
+(()=>{
+  const modal=$('#pf-modal'); if(!modal) return;
+  const errBox=$('#pf-err');
+  const open=()=>{
+    if(!me) return;
+    $('#pf-username').value=me.username||'';
+    $('#pf-email').value=me.email||'';
+    $('#pf-cur').value='';
+    $('#pf-new').value='';
+    errBox.classList.remove('show'); errBox.textContent='';
+    modal.classList.remove('hide');
+  };
+  const close=()=>modal.classList.add('hide');
+  const bProfile=$('#btn-profile'); if(bProfile) bProfile.onclick=open;
+  $('#pf-cancel').onclick=close;
+  modal.addEventListener('click',e=>{ if(e.target===modal) close(); });
+  $('#pf-save').onclick=async()=>{
+    errBox.classList.remove('show');
+    const payload={};
+    const username=($('#pf-username').value||'').trim();
+    const email=($('#pf-email').value||'').trim();
+    const cur=$('#pf-cur').value, newP=$('#pf-new').value;
+    if(username && username!==(me&&me.username)) payload.username=username;
+    if(email && email.toLowerCase()!==String((me&&me.email)||'').toLowerCase()) payload.email=email;
+    if(newP){ payload.current_password=cur; payload.new_password=newP; }
+    if(!Object.keys(payload).length){ close(); return; }
+    const btn=$('#pf-save'); btn.disabled=true;
+    try{
+      const u=await put('/api/auth/me',payload);
+      me=u; refreshBar(); close();
+      tok('Đã lưu thông tin tài khoản');
+    }catch(e){ errBox.textContent=e.message||'Có lỗi xảy ra'; errBox.classList.add('show'); }
+    finally{ btn.disabled=false; }
+  };
+})();
+
+/* ── SIDEBAR NAVIGATION ── */
+const NAV=[
+  {s:'main',items:[
+    {id:'library',ic:'🎬',lb:'Thư viện Template'},
+    {id:'mytemplates',ic:'📁',lb:'Template của tôi'},
+    {id:'ai',ic:'🤖',lb:'Trợ lý AI'},
+    {id:'sales',ic:'🛍️',lb:'Bán hàng theo ngành'},
+    {id:'article',ic:'📰',lb:'Bài viết → Video 60s'},
+    {id:'batch',ic:'📦',lb:'Gen hàng loạt'},
+    {id:'download',ic:'📥',lb:'Tải Video MXH'},
+    {id:'subtitles',ic:'🎙️',lb:'Dịch & Thêm Phụ đề'},
+    {id:'history',ic:'⏱',lb:'Lịch sử render'},
+    {id:'activity',ic:'📋',lb:'Nhật ký tài khoản'},
+    {id:'topup',ic:'💎',lb:'Nạp credit'},
+  ]},
+  {s:'admin',admin:true,items:[
+    {id:'analytics',ic:'📊',lb:'Analytics'},
+    {id:'users',ic:'👥',lb:'Tài khoản'},
+    {id:'adm',ic:'🛠',lb:'Admin'},
+    {id:'pricing',ic:'💰',lb:'Bảng giá & Model'},
+    {id:'promos',ic:'🎉',lb:'Khuyến mãi'},
+  ]}
+];
+const TITLES={
+  library:'🎬 Thư viện Template',
+  mytemplates:'📁 Template của tôi',
+  ai:'🤖 Trợ lý AI Thông minh',
+  sales:'🛍️ Bán hàng theo ngành hàng',
+  article:'📰 Bài viết → Video 60 giây',
+  batch:'📦 Gen Hàng Loạt — Review Từng Sản Phẩm',
+  download:'📥 Tải Video Mạng Xã Hội',
+  subtitles:'🎙️ Dịch thuật & Thêm Phụ đề Video',
+  history:'⏱ Lịch sử render',
+  activity:'📋 Nhật ký tài khoản',
+  topup:'💎 Nạp Credit',
+  analytics:'📊 Analytics — Phân tích vận hành',
+  users:'👥 Quản lý tài khoản',
+  adm:'🛠 Quản trị hệ thống',
+  pricing:'💰 Bảng giá dịch vụ & Quản lý Model',
+  promos:'🎉 Chương trình khuyến mãi'
+};
+
+function renderSb(){
+  refreshBar();
+  const nav=NAV.filter(s=>!s.admin||me?.role==='admin');
+  $('#sb-nav').innerHTML=nav.map(s=>`
+    <div class="nav-sec">
+      <div class="nav-lbl">${s.s==='admin'?'Quản trị':'Tính năng chính'}</div>
+      ${s.items.map(n=>`<div class="ni${tab===n.id?' on':''}" data-nav="${n.id}"><span class="ic">${n.ic}</span>${n.lb}</div>`).join('')}
+    </div>`).join('');
+  $$('[data-nav]').forEach(el=>el.onclick=()=>{tab=el.dataset.nav;localStorage.tab=tab;render()});
+}
+
+let lastWorkingVideoUrl='';
+
+function renderPage(){
+  $('#tb-title').textContent=TITLES[tab]||'Dashboard';
+  $('#tb-right').innerHTML='';
+  const pages={
+    library:pgLib,
+    mytemplates:pgMyTemplates,
+    ai:pgAI,
+    sales:pgSales,
+    article:pgArticle,
+    batch:pgBatch,
+    download:pgDownload,
+    subtitles:pgSubtitles,
+    history:pgHist,
+    activity:pgActivity,
+    topup:pgTopup,
+    analytics:pgAnalytics,
+    users:pgUsers,
+    adm:pgAdm,
+    pricing:pgPricingModels,
+    promos:pgPromos
+  };
+  (pages[tab]||pgLib)();
+}
+
+/* ─────────── BÁN HÀNG THEO NGÀNH HÀNG (preset) ─────────── */
+function _modelOpts(models, step){
+  const list=(models||[]).filter(x=>x.step===step);
+  if(!list.length) return '<option value="" disabled>Chưa có model — admin chưa thêm</option>';
+  return list.map(x=>
+    `<option value="${esc(x.id)}" ${x.enabled?'':'disabled'}>${x.enabled?(x.price>0?x.price+' credit — ':'Free — '):'🔴 Tắt — '}${esc(x.name)}</option>`).join('');
+}
+const _vnd=n=>new Intl.NumberFormat('vi-VN').format(Math.round(n||0))+'đ';
+
+async function pgSales(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const [presets,m]=await Promise.all([api('/api/assistant/presets'),api('/api/assistant/models')]);
+    const ps=presets.presets||[];
+    pc.innerHTML=`
+      <div class="sec">
+        <div>
+          <div class="ptitle">🛍️ Bán hàng theo ngành hàng</div>
+          <div class="pdesc">Chọn ngành hàng → tool dùng đúng góc bán của ngành đó (đối tượng, nỗi đau, điểm bán, lời kêu gọi) để viết kịch bản. Dùng model LLM + ảnh + video bạn đang có.</div>
+        </div>
+      </div>
+      <div class="card mb16">
+        <h3 class="mb12">1️⃣ Chọn ngành hàng</h3>
+        <div class="ga" id="ps-grid">
+          ${ps.map(p=>`<div class="card-sm" data-preset="${esc(p.id)}" style="cursor:pointer;border:1px solid var(--bd)">
+            <div class="bold" style="font-size:14px">${esc(p.icon)} ${esc(p.label)}</div>
+            <div class="xs mu mt2">${esc(p.audience)}</div>
+          </div>`).join('')}
+        </div>
+        <div id="ps-detail" class="mt16"></div>
+      </div>
+      <div class="card" id="ps-form" style="display:none">
+        <h3 class="mb12">2️⃣ Thông tin sản phẩm &amp; tạo video</h3>
+        <div class="g2 mb12">
+          <div class="field"><label>Tên sản phẩm</label><input id="ps-product" placeholder="Ví dụ: Áo linen basic unisex"></div>
+          <div class="field"><label>Điểm nổi bật (phân cách bằng dấu ;)</label><input id="ps-points" placeholder="cotton 100%; không xù; 3 màu"></div>
+          <div class="field"><label>Giá / ưu đãi</label><input id="ps-price" placeholder="299.000đ, giảm 20% hôm nay"></div>
+          <div class="field"><label>Thời lượng (giây)</label>
+            <select id="ps-duration"><option value="30">30s</option><option value="45">45s</option><option value="60" selected>60s</option><option value="90">90s</option></select>
+          </div>
+          <div class="field"><label>Model LLM (kịch bản)</label><select id="ps-llm">${_modelOpts(m.models||[],'llm')}</select></div>
+          <div class="field"><label>Model ảnh</label><select id="ps-img">${_modelOpts(m.models||[],'image_generate')}</select></div>
+          <div class="field"><label>Model video</label><select id="ps-video">${_modelOpts(m.models||[],'video_i2v')}</select></div>
+          <div class="field"><label>Ngôn ngữ thoại</label><select id="ps-lang"><option value="vi" selected>Tiếng Việt</option><option value="en">English</option></select></div>
+          <div class="field"><label>Tỉ lệ khung hình</label><select id="ps-ratio"><option value="9:16" selected>9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option></select></div>
+          <div class="field"><label>Giọng đọc (TTS)</label><select id="ps-voice"><option value="auto" selected>🎙️ Tự động theo giới tính</option><option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option><option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option></select>
+            <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px"><input type="checkbox" id="ps-tts" checked> Bật giọng đọc cho lời thoại</label>
+          </div>
+        </div>
+        <div class="xs mu mb8" id="ps-estimate"></div>
+        <button class="btn btn-p" id="ps-start" style="padding:12px 22px;font-size:15px">🎬 Tạo video bán hàng</button>
+        <button class="btn btn-sm" id="ps-to-ai" style="margin-left:8px">↗ Mở trong Trợ lý AI</button>
+        <div id="ps-progress" class="mt16"></div>
+      </div>`;
+
+    let cur=null;
+    const detail=(p)=>{
+      cur=p;
+      $$('#ps-grid [data-preset]').forEach(el=>el.style.borderColor=(el.dataset.preset===p.id)?'var(--gold)':'var(--bd)');
+      $('#ps-detail').innerHTML=`<div class="card-sm" style="background:rgba(212,175,55,.08)">
+        <div class="bold mb8">${esc(p.icon)} ${esc(p.label)} — góc bán của ngành này</div>
+        <div class="xs mu" style="line-height:1.8">
+          <b>Đối tượng:</b> ${esc(p.audience)}<br>
+          <b>Giọng văn:</b> ${esc(p.tone)}<br>
+          <b>Hook:</b> ${esc(p.hook)}<br>
+          <b>Nỗi đau:</b> ${esc(p.pain)}<br>
+          <b>Điểm bán:</b> ${esc(p.proof)}<br>
+          <b>Lời kêu gọi:</b> ${esc(p.cta)}<br>
+          <b>Hình ảnh:</b> ${esc(p.visual)}
+        </div></div>`;
+      $('#ps-form').style.display='';
+      updateEstimate();
+    };
+    const buildIdea=()=>{
+      const name=($('#ps-product').value||'').trim()||'sản phẩm';
+      const pts=($('#ps-points').value||'').trim();
+      const pr=($('#ps-price').value||'').trim();
+      const extra=[pts?('Điểm nổi bật: '+pts):'',pr?('Giá/ưu đãi: '+pr):''].filter(Boolean).join('. ');
+      return `Video bán hàng ngành ${cur.label}. Sản phẩm: ${name}. ${extra}`.trim();
+    };
+    const updateEstimate=async()=>{
+      try{
+        const e=await post('/api/assistant/estimate',{selections:{llm:$('#ps-llm').value,image_generate:$('#ps-img').value,video_i2v:$('#ps-video').value},duration:+$('#ps-duration').value,num_scenes:6});
+        $('#ps-estimate').textContent='Ước tính: '+(e['tổng_credit']??0)+' credit (LLM + ảnh + video)';
+      }catch(e){ $('#ps-estimate').textContent=''; }
+    };
+    $$('#ps-grid [data-preset]').forEach(el=>el.onclick=()=>detail(ps.find(x=>x.id===el.dataset.preset)));
+    ['#ps-duration','#ps-llm','#ps-img','#ps-video'].forEach(s=>{const el=$(s); if(el) el.onchange=updateEstimate;});
+    $('#ps-to-ai').onclick=()=>{
+      if(!cur){ ter('Chọn ngành hàng trước'); return; }
+      localStorage.tab='ai'; tab='ai'; render();
+      setTimeout(()=>{ const f=$('#ap-idea'); if(f){ f.value=buildIdea(); f.focus(); } },400);
+      tok('Đã mở Trợ lý AI — kiểm tra lại ý tưởng rồi bấm Bắt đầu');
+    };
+    $('#ps-start').onclick=async()=>{
+      if(!cur){ ter('Chọn ngành hàng trước'); return; }
+      const btn=$('#ps-start'); btn.disabled=true; btn.innerHTML='<div class="spin"></div> Đang tạo...';
+      const prog=$('#ps-progress');
+      try{
+        const sub=await post('/api/assistant/pipeline',{
+          idea:buildIdea(), model_llm:$('#ps-llm').value, model_image:$('#ps-img').value,
+          model_video:$('#ps-video').value, duration:+$('#ps-duration').value,
+          aspect_ratio:$('#ps-ratio').value, voice:$('#ps-voice').value,
+          use_tts:$('#ps-tts').checked, language:$('#ps-lang').value,
+          mode:'standard', preset:cur.id
+        });
+        prog.innerHTML='<div class="card-sm"><div class="row"><span class="bold" id="ps-step">Đang khởi tạo...</span></div><div class="pb mt8"><div class="pf" id="ps-bar" style="width:5%"></div></div></div>';
+        for(let i=0;i<900;i++){
+          await new Promise(r=>setTimeout(r,2000));
+          const st=await api('/api/assistant/pipeline/'+sub.job_id+'/status');
+          $('#ps-bar').style.width=(st.progress||0)+'%';
+          $('#ps-step').textContent=st.step||st.status;
+          if(st.status==='done'){
+            prog.innerHTML='<div class="card-sm" style="background:rgba(80,200,120,.1)"><span class="ok bold">✅ Hoàn tất!</span> <span class="xs mu">Video đã lưu trong “Template của tôi”.</span> <button class="btn btn-sm btn-p" id="ps-gotpl">Xem Template của tôi</button></div>';
+            $('#ps-gotpl').onclick=()=>{ localStorage.tab='mytemplates'; tab='mytemplates'; render(); };
+            break;
+          }
+          if(st.status==='failed'){ prog.innerHTML='<div class="card-sm" style="background:rgba(255,80,80,.1)"><span class="er bold">Lỗi:</span> '+esc(st.error||'không rõ')+'</div>'; break; }
+        }
+      }catch(e){ prog.innerHTML='<div class="card-sm" style="background:rgba(255,80,80,.1)"><span class="er">'+esc(e.message)+'</span></div>'; }
+      finally{ btn.disabled=false; btn.innerHTML='🎬 Tạo video bán hàng'; }
+    };
+  }catch(e){ pc.innerHTML='<div class="card"><p class="er">'+esc(e.message)+'</p></div>'; }
+}
+
+/* ─────────── BÀI VIẾT (LINK) → VIDEO 60s ─────────── */
+async function pgArticle(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(6);
+  try{
+    const [m,voices]=await Promise.all([api('/api/assistant/models'),api('/api/assistant/voices')]);
+    pc.innerHTML=`
+      <div class="sec">
+        <div>
+          <div class="ptitle">📰 Bài viết → Video 60 giây</div>
+          <div class="pdesc">Dán link bài viết (hoặc dán nội dung) → AI đọc, viết lời dẫn, tạo ảnh minh hoạ, đọc thành tiếng và dựng video hoàn chỉnh kèm phụ đề. Không dùng model video nên rẻ hơn pipeline clip phôi.</div>
+        </div>
+      </div>
+      <div class="card mb16">
+        <div class="field"><label>Link bài viết</label><input id="ar-url" placeholder="https://.../bai-viet"></div>
+        <div class="field mt8"><label>Hoặc dán nội dung bài viết vào đây</label><textarea id="ar-text" rows="5" placeholder="Dán nội dung bài viết (nhiều trăm từ) nếu trang chặn không đọc được"></textarea></div>
+        <div class="row mt8" style="gap:8px">
+          <button class="btn btn-sm" id="ar-preview">👀 Đọc bài viết trước</button>
+          <span class="xs mu" id="ar-preview-info"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3 class="mb12">Cấu hình video</h3>
+        <div class="g3 mb12">
+          <div class="field"><label>Model LLM (viết lời dẫn)</label><select id="ar-llm">${_modelOpts(m.models||[],'llm')}</select></div>
+          <div class="field"><label>Model ảnh minh hoạ</label><select id="ar-img">${_modelOpts(m.models||[],'image_generate')}</select></div>
+          <div class="field"><label>Giọng đọc</label><select id="ar-voice">${(voices.voices||[]).map(v=>`<option value="${esc(v.id)}" ${v.id==='vi-VN-HoaiMyNeural'?'selected':''}>${esc(v.name||v.id)}</option>`).join('')}</select></div>
+          <div class="field"><label>Kiểu dựng video</label><select id="ar-video-mode">
+            <option value="slide" selected>🖼️ Ảnh + giọng đọc + phụ đề (rẻ)</option>
+            <option value="video">🎬 Dùng model video thật (Veo/omni-flash) — chất lượng cao</option>
+          </select></div>
+          <div class="field" id="ar-video-field" style="display:none"><label>Model video</label><select id="ar-video">${_modelOpts(m.models||[],'video_i2v')}</select></div>
+          <div class="field"><label>Thời lượng</label><select id="ar-duration"><option value="30">30s</option><option value="45">45s</option><option value="60" selected>60s</option><option value="90">90s</option><option value="120">120s</option></select></div>
+          <div class="field"><label>Tỉ lệ khung hình</label><select id="ar-ratio"><option value="9:16" selected>9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option></select></div>
+          <div class="field"><label>Ngôn ngữ lời dẫn</label><select id="ar-lang"><option value="vi" selected>Tiếng Việt</option><option value="en">English</option></select></div>
+        </div>
+        <div class="xs mu mb8" id="ar-estimate"></div>
+        <button class="btn btn-p" id="ar-start" style="padding:12px 22px;font-size:15px">🎬 Dựng video từ bài viết</button>
+        <div id="ar-progress" class="mt16"></div>
+      </div>`;
+
+    const est=async()=>{
+      try{
+        const e=await api('/api/assistant/article/estimate?duration='+$('#ar-duration').value
+          +'&model_llm='+encodeURIComponent($('#ar-llm').value)
+          +'&model_image='+encodeURIComponent($('#ar-img').value)
+          +'&model_video='+encodeURIComponent($('#ar-video').value||'')
+          +'&video_mode='+$('#ar-video-mode').value);
+        $('#ar-estimate').textContent='Ước tính: '+e.tong_credit+' credit · '+e.num_scenes+' ảnh'
+          +(e.video_mode==='video'?(' + '+e.num_scenes+' clip video'):'')+' (giọng đọc và ghép dựng miễn phí)';
+      }catch(e){}
+    };
+    $('#ar-video-mode').onchange=()=>{ $('#ar-video-field').style.display=($('#ar-video-mode').value==='video'?'':'none'); est(); };
+    $('#ar-duration').onchange=est; $('#ar-llm').onchange=est; $('#ar-img').onchange=est; $('#ar-video').onchange=est; est();
+
+    $('#ar-preview').onclick=async()=>{
+      const info=$('#ar-preview-info'); info.textContent='Đang đọc...';
+      try{
+        const d=await post('/api/assistant/article/preview',{url:$('#ar-url').value.trim(),text:$('#ar-text').value});
+        info.innerHTML='<b class="ok">'+esc(d.title)+'</b> · '+d.chars+' ký tự — <span class="mu">'+esc((d.excerpt||'').slice(0,160))+'…</span>';
+      }catch(e){ info.innerHTML='<span class="er">'+esc(e.message)+'</span>'; }
+    };
+    $('#ar-start').onclick=async()=>{
+      const btn=$('#ar-start'), prog=$('#ar-progress');
+      btn.disabled=true; btn.innerHTML='<div class="spin"></div> Đang dựng...';
+      prog.innerHTML='<div class="card-sm"><span class="bold" id="ar-step">Đang bắt đầu...</span><div class="pb mt8"><div class="pf" id="ar-bar" style="width:5%"></div></div></div>';
+      try{
+        const sub=await post('/api/assistant/article',{
+          url:$('#ar-url').value.trim(), text:$('#ar-text').value,
+          model_llm:$('#ar-llm').value, model_image:$('#ar-img').value,
+          duration:+$('#ar-duration').value, aspect_ratio:$('#ar-ratio').value,
+          voice:$('#ar-voice').value, language:$('#ar-lang').value,
+          video_mode:$('#ar-video-mode').value, model_video:$('#ar-video-mode').value==='video'?$('#ar-video').value:''
+        });
+        for(let i=0;i<900;i++){
+          await new Promise(r=>setTimeout(r,2000));
+          const st=await api('/api/assistant/article/'+sub.job_id+'/status');
+          const bar=$('#ar-bar'), step=$('#ar-step');
+          if(bar) bar.style.width=(st.progress||0)+'%';
+          if(step) step.textContent=st.step||st.status;
+          if(st.status==='done'){
+            const r=st.result||{};
+            prog.innerHTML='<div class="card-sm" style="background:rgba(80,200,120,.1)"><div class="bold ok mb8">✅ Hoàn tất — '+esc(r.title||'Video')+' ('+(r.duration||0)+'s, '+r.num_scenes+' cảnh)</div>'+
+              '<video src="'+esc(r.video_url)+'" controls style="width:100%;max-width:320px;border-radius:12px"></video>'+
+              '<div class="row mt8" style="gap:8px"><a class="btn btn-sm btn-p" href="'+esc(r.video_url)+'" download>⬇ Tải video</a>'+
+              '<a class="btn btn-sm" href="'+esc(r.srt_url)+'" download>⬇ Tải phụ đề .srt</a>'+
+              '<span class="xs mu">Nguồn: '+esc(r.source_url||'nội dung dán')+'</span></div></div>';
+            break;
+          }
+          if(st.status==='failed'){ prog.innerHTML='<div class="card-sm" style="background:rgba(255,80,80,.1)"><span class="er bold">Lỗi:</span> '+esc(st.error||'')+'</div>'; break; }
+        }
+      }catch(e){ prog.innerHTML='<div class="card-sm" style="background:rgba(255,80,80,.1)"><span class="er">'+esc(e.message)+'</span></div>'; }
+      finally{ btn.disabled=false; btn.innerHTML='🎬 Dựng video từ bài viết'; }
+    };
+  }catch(e){ pc.innerHTML='<div class="card"><p class="er">'+esc(e.message)+'</p></div>'; }
+}
+
+/* ─────────── ANALYTICS (admin) ─────────── */
+async function pgAnalytics(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(6);
+  const periods=[['lifetime','Tất cả'],['today','Hôm nay'],['yesterday','Hôm qua'],['l7d','7 ngày'],['l30d','30 ngày'],['custom','Tùy chọn']];
+  try{
+    pc.innerHTML=`
+      <div class="sec">
+        <div>
+          <div class="ptitle">📊 Analytics — Phân tích vận hành</div>
+          <div class="pdesc">Người dùng, tiền nạp và tiền chi theo khoảng thời gian bạn chọn.</div>
+        </div>
+      </div>
+      <div class="card mb16">
+        <div class="row" style="gap:6px;flex-wrap:wrap" id="an-periods">
+          ${periods.map(p=>`<button class="btn btn-sm" data-p="${p[0]}">${p[1]}</button>`).join('')}
+        </div>
+        <div class="row mt8" id="an-custom" style="display:none;gap:8px">
+          <input type="date" id="an-start"><span class="mu">→</span><input type="date" id="an-end">
+          <button class="btn btn-sm btn-p" id="an-apply">Áp dụng</button>
+        </div>
+      </div>
+      <div id="an-body"></div>`;
+    let period='lifetime';
+    const load=async()=>{
+      const body=$('#an-body'); body.innerHTML=skeletonGrid(4);
+      try{
+        let q='?period='+period;
+        if(period==='custom'){ q+='&start='+$('#an-start').value+'&end='+$('#an-end').value; }
+        const d=await api('/api/admin/analytics'+q);
+        const u=d.users,m2=d.money;
+        const card=(t,v,s,cls)=>'<div class="card-sm" style="min-width:150px"><div class="xs mu">'+t+'</div><div class="bold '+(cls||'')+'" style="font-size:22px;margin:4px 0">'+v+'</div><div class="xs mu">'+(s||'')+'</div></div>';
+        let html='<div class="card mb16"><h3 class="mb12">Người dùng</h3><div class="row" style="gap:12px;flex-wrap:wrap">'+
+          card('Tổng người dùng hiện tại',u.total,'toàn hệ thống')+
+          card('Người dùng mới',u.new,'trong kỳ này','ac')+
+          card('Người dùng hoạt động',u.active,'có thao tác trong kỳ','ac')+
+          card('Đang online (15 phút)',u.online_now,'người dùng')+
+          card('Lượt đăng nhập',u.logins,'trong kỳ')+
+          '</div></div>';
+        html+='<div class="card mb16"><h3 class="mb12">Tiền nạp / tiền chi</h3><div class="row" style="gap:12px;flex-wrap:wrap">'+
+          card('Tiền nạp',_vnd(m2.topup_vnd),m2.topup_credits+' credit','ok')+
+          card('Tiền chi',_vnd(m2.spend_vnd),m2.spend_credits+' credit','er')+
+          card('Quy đổi',_vnd(m2.vnd_per_credit),'1 credit')+
+          '</div></div>';
+        if((d.series||[]).length){
+          const maxNew=Math.max(1,...d.series.map(s=>s.new_users));
+          html+='<div class="card"><h3 class="mb12">Theo ngày</h3><div class="tw"><table><tr><th>Ngày</th><th>User mới</th><th>Hoạt động</th><th>Tiền nạp</th></tr>'+
+            d.series.map(s=>'<tr><td class="sm">'+esc(s.date)+'</td><td><div class="row" style="gap:6px;align-items:center"><div style="height:8px;border-radius:4px;background:var(--gold);width:'+Math.round(s.new_users/maxNew*70)+'px;min-width:2px"></div>'+s.new_users+'</div></td><td>'+s.active_users+'</td><td>'+_vnd(s.topup_vnd)+'</td></tr>').join('')+
+            '</table></div></div>';
+        }
+        body.innerHTML=html;
+      }catch(e){ body.innerHTML='<div class="card"><p class="er">'+esc(e.message)+'</p></div>'; }
+    };
+    $$('#an-periods [data-p]').forEach(b=>b.onclick=()=>{
+      period=b.dataset.p;
+      $$('#an-periods [data-p]').forEach(x=>x.classList.toggle('btn-p',x===b));
+      $('#an-custom').style.display=period==='custom'?'':'none';
+      load();
+    });
+    $('#an-apply').onclick=()=>load();
+    load();
+  }catch(e){ pc.innerHTML='<div class="card"><p class="er">'+esc(e.message)+'</p></div>'; }
+}
+
+/* ─────────── 1. THƯ VIỆN TEMPLATE (TÁI SỬ DỤNG TÍNH PHÍ BÌNH THƯỜNG) ─────────── */
+async function pgLib(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const ts=await api('/api/templates');
+    pc.innerHTML=`
+      <div class="sec">
+        <div>
+          <div class="ptitle">Thư viện Video & Template</div>
+          <div class="pdesc">Chọn bất kỳ template nào để tái sử dụng — chi phí hiển thị minh bạch trước khi tạo</div>
+        </div>
+      </div>
+      ${ts.length?`<div class="ga" id="lib-grid">${ts.map(t=>tCard(t)).join('')}</div>`:
+        `<div class="empty"><div class="empty-ic">📭</div><div style="font-size:14px;font-weight:600;color:var(--tx2)">Chưa có template</div><div class="sm mu">Admin chưa duyệt template nào</div></div>`}
+      <div id="gen-area" class="mt24"></div>`;
+    mountRatioTabs(document.getElementById('lib-grid'));
+    bindUse(ts,'gen-area');
+  }catch(e){pc.innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+function tCard(t){
+  const ratio=((t.template_schema||{}).aspect_ratio)||'9:16';
+  const th=t.preview_video_url
+    ?`<video muted loop preload="metadata" style="width:100%;height:100%;object-fit:cover" src="${esc(t.preview_video_url)}" onmouseenter="this.play()" onmouseleave="this.pause()"></video>`
+    :t.thumbnail_url?`<img style="width:100%;height:100%;object-fit:cover" src="${esc(t.thumbnail_url)}" alt="">`
+    :`<div style="font-size:32px;opacity:.25">🎬</div>`;
+  const cc={full:'b-ac',hook:'b-warn',cta:'b-ok'};
+  return `<div class="tc" data-ratio="${esc(ratio)}">
+    <div class="tc-med">${th}<div class="tc-over"><div class="play-ic">▶</div></div></div>
+    <div class="tc-body">
+      <div class="tc-title">${esc(t.title)}</div>
+      <div class="row mb8 gap-4"><span class="badge ${cc[t.category]||'b-mu'}">${esc(t.category)}</span><span class="xs mu">×${t.usage_count} lượt dùng</span></div>
+      <div class="row gap-6 mt-auto">
+        <button class="btn btn-sm" data-detail="${t.id}" style="flex:1;justify-content:center">📋 Xem chi tiết</button>
+        <button class="btn btn-p btn-sm" data-use="${t.id}" style="flex:1;justify-content:center">✨ Tái sử dụng</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function showTemplateDetail(t){
+  const aId='tpl-detail-modal';
+  let area=document.getElementById(aId);
+  if(!area){area=document.createElement('div');area.id=aId;area.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px';document.body.appendChild(area)}
+  const sc=t.template_schema||{};
+  const layers=Array.isArray(sc.layers)?sc.layers:[];
+  const defaults=sc.defaults||{};
+  area.innerHTML=`
+    <div class="card" style="max-width:700px;width:100%;max-height:80vh;overflow-y:auto;position:relative">
+      <button class="btn btn-sm" style="position:absolute;top:12px;right:12px" onclick="document.getElementById('${aId}').style.display='none'">✕ Đóng</button>
+      <h2 class="mb12">${esc(t.title)}</h2>
+      <div class="g2 mb12">
+        <div><span class="xs mu">ID</span><div class="bold">${t.id}</div></div>
+        <div><span class="xs mu">Danh mục</span><div class="bold">${esc(t.category)}</div></div>
+        <div><span class="xs mu">Trạng thái</span><div class="bold">${esc(t.status)}</div></div>
+        <div><span class="xs mu">Lượt dùng</span><div class="bold">${t.usage_count}</div></div>
+        <div><span class="xs mu">Người tạo</span><div class="bold">${t.creator_id}</div></div>
+        <div><span class="xs mu">Ngày tạo</span><div class="bold">${fmtD(t.created_at)}</div></div>
+      </div>
+      ${t.base_video_url?`<div class="field mb12"><label>Video mẫu (base)</label><video controls src="${esc(t.base_video_url)}" style="max-height:200px;border-radius:8px;background:#000;display:block"></video></div>`:''}
+      ${t.thumbnail_url?`<div class="field mb12"><label>Ảnh thu nhỏ</label><img src="${esc(t.thumbnail_url)}" style="max-height:120px;border-radius:8px"></div>`:''}
+      ${t.preview_video_url?`<div class="field mb12"><label>Video xem trước</label><video controls src="${esc(t.preview_video_url)}" style="max-height:200px;border-radius:8px;background:#000;display:block"></video></div>`:''}
+      <div class="field mb12"><label>Template Schema (JSON)</label><pre style="background:var(--bg2);border:1px solid var(--bd);border-radius:8px;padding:12px;font-size:11px;overflow-x:auto;max-height:300px">${esc(JSON.stringify(sc,null,2))}</pre></div>
+      ${layers.length?`<div class="field mb12"><label>Layers (${layers.length})</label>${layers.map(l=>`<div class="card-sm mb4 xs"><b>${esc(l.id)}</b> - ${esc(l.type)} ${l.default?'(default: '+esc(String(l.default).slice(0,50))+')':''}</div>`).join('')}</div>`:''}
+      ${Object.keys(defaults).length?`<div class="field mb12"><label>Defaults</label><pre style="background:var(--bg2);border:1px solid var(--bd);border-radius:8px;padding:12px;font-size:11px">${esc(JSON.stringify(defaults,null,2))}</pre></div>`:''}
+      ${t.source_generation_id?`<div class="xs mu">Tạo từ generation #${t.source_generation_id}</div>`:''}
+    </div>`;
+  area.style.display='flex';
+}
+
+function bindUse(ts,aId,prefilledInputs=null,prefilledTitle='',prefilledCat='Mặc định'){
+  $$('[data-detail]').forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const t=ts.find(x=>x.id==b.dataset.detail);
+    if(t)showTemplateDetail(t);
+  });
+  $$('[data-use]').forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const t=ts.find(x=>x.id==b.dataset.use);
+    if(t)openGen(t,aId,prefilledInputs,prefilledTitle,prefilledCat);
+  });
+}
+
+async function openGen(t,aId,prefInputs=null,prefTitle='',prefCat='Mặc định'){
+  const area=$('#'+aId);
+  if(!area)return;
+  area.scrollIntoView({behavior:'smooth'});
+  area.innerHTML=`<div class="card su"><div class="spin"></div> Đang mở template...</div>`;
+  const isAI=(t.template_schema||{}).ai_video;
+  if(isAI)renderAIForm(t,aId,prefInputs,prefTitle,prefCat);
+  else renderFastForm(t,aId,prefInputs,prefTitle,prefCat);
+}
+
+async function renderAIForm(t,aId,prefInputs=null,prefTitle='',prefCat='Mặc định'){
+  const area=$('#'+aId);
+  const pr=await api('/api/pricing');
+  const sc=t.template_schema||{},dance=bool(sc.dance);
+  const dfl=prefInputs||sc.defaults||{};
+
+  area.innerHTML=`<div class="card su mt12">
+    <div class="row mb16">
+      <span style="font-size:22px">🤖</span>
+      <div>
+        <h3 style="margin:0">${esc(t.title)}</h3>
+        <div class="xs mu">Model tạo video: <b>MiniMax-H3</b> · Tái tạo theo template</div>
+      </div>
+      <button class="btn btn-sm mla" onclick="$('#${aId}').innerHTML=''">✕ Đóng</button>
+    </div>
+
+    <div class="g2">
+      <div class="field">
+        <label>Tên thành phẩm / Dự án</label>
+        <input id="ai-title" value="${esc(prefTitle||t.title)}" placeholder="Đặt tên để dễ tìm kiếm lại">
+      </div>
+      <div class="field">
+        <label>Danh mục lưu trữ của bạn</label>
+        <input id="ai-cat" value="${esc(prefCat||'Mặc định')}" placeholder="Ví dụ: Thời trang, Bất động sản, Review...">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Mô tả video (Prompt tiếng Anh hoặc tiếng Việt)</label>
+      <textarea id="ai-pr" rows="3" placeholder="A stunning cinematic shot...">${esc(dfl.prompt||'')}</textarea>
+    </div>
+
+    <div class="g3">
+      <div class="field">
+        <label>Thời lượng (giây)</label>
+        <select id="ai-d">
+          ${[5,6,7,8,9,10].map(s=>`<option value="${s}" ${s===(dfl.duration||5)?'selected':''}>${s} giây</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Tỉ lệ khung hình</label>
+        <select id="ai-r">
+          ${(pr.ratios||['16:9','9:16','1:1']).map(r=>`<option value="${r}" ${r===(dfl.ratio||'9:16')?'selected':''}>${r}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Độ phân giải</label>
+        <select id="ai-re">
+          ${(pr.resolutions||['768P']).map(r=>`<option value="${r}" ${r===(dfl.resolution||'768P')?'selected':''}>${r}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    ${dance?`
+      <div class="g2">
+        <div class="field"><label>👤 Ảnh nhân vật (Character)</label><input type="file" id="ai-ch" accept="image/*"></div>
+        <div class="field"><label>🕺 Video chuyển động mẫu (tuỳ chọn)</label><input type="file" id="ai-rv" accept="video/*"></div>
+      </div>`:
+      `<div class="field"><label>🖼 Ảnh khung hình đầu (First frame — tuỳ chọn)</label><input type="file" id="ai-ff" accept="image/*"></div>`}
+
+    <div class="card-sm mb12" style="background:var(--bg3);border:1px solid rgba(212,175,55,0.25)">
+      <div class="row"><span class="bold">Chi phí dự kiến:</span><span class="mla ok bold" id="ai-cp">...</span></div>
+      <div class="xs mu mt4">Tính theo giá: ${pr.h3_768p} credit/giây (768P), ${pr.h3_2k} credit/giây (2K)</div>
+    </div>
+
+    <div class="row gap-8">
+      <button class="btn btn-p" id="ai-go">🚀 Bắt đầu tạo video</button>
+      <button class="btn" onclick="$('#${aId}').innerHTML=''">Huỷ</button>
+    </div>
+    <div id="ai-res" class="mt16"></div>
+  </div>`;
+
+  const upCost=()=>{
+    const d=+$('#ai-d').value,res=$('#ai-re').value;
+    const rate=res==='2K'?pr.h3_2k:pr.h3_768p;
+    const base=d*rate;
+    const extra=dance?pr.heavy:0;
+    $('#ai-cp').textContent=`${(base+extra).toFixed(2)} credit`;
+  };
+  $('#ai-d').onchange=upCost;$('#ai-re').onchange=upCost;upCost();
+  ['ai-ch','ai-rv','ai-ff'].forEach(id=>attachDrop(id));
+
+  $('#ai-go').onclick=async()=>{
+    const btn=$('#ai-go');
+    try{
+      btn.disabled=true;btn.innerHTML='<div class="spin"></div> Đang gửi request...';
+      const input={prompt:$('#ai-pr').value,duration:+$('#ai-d').value,ratio:$('#ai-r').value,resolution:$('#ai-re').value};
+      if(dance){
+        const cf=$('#ai-ch')?.files[0];if(cf)input.character_image=await upload(cf);
+        const rf=$('#ai-rv')?.files[0];if(rf)input.reference_video=await upload(rf);
+      }else{
+        const ff=$('#ai-ff')?.files[0];if(ff)input.first_frame_image=await upload(ff);
+      }
+      const g=await post('/api/generate',{
+        template_id:t.id,
+        input_data:input,
+        title:$('#ai-title').value,
+        user_category:$('#ai-cat').value,
+        share_to_library:true
+      });
+      tok(`Đã tạo yêu cầu — trừ ${g.credits_cost} credit`);
+      await refreshMe();trackGen(g.id,'ai-res');
+    }catch(e){ter(e.message);btn.disabled=false;btn.innerHTML='🚀 Bắt đầu tạo video'}
+  };
+}
+
+async function renderFastForm(t,aId,prefInputs=null,prefTitle='',prefCat='Mặc định'){
+  const area=$('#'+aId);
+  const pr=await api('/api/pricing');
+  const sc=t.template_schema||{},layers=sc.layers||[],dfl=prefInputs||sc.defaults||{};
+  const fields=layers.map(l=>l.type==='text'
+    ?`<div class="field"><label>${esc(l.id)} (chữ)</label><input data-f="${esc(l.id)}" value="${esc(dfl[l.id]||l.default||'')}"></div>`
+    :`<div class="field"><label>${esc(l.id)} (${l.type})</label><input type="file" accept="image/*" data-img="${esc(l.id)}"></div>`).join('');
+  const motion=sc.motion_transfer?`<div class="field"><label>🧑 Ảnh nhân vật</label><input type="file" accept="image/*" data-img="character_image"></div>`:'';
+
+  area.innerHTML=`<div class="card su mt12">
+    <div class="row mb16">
+      <span style="font-size:20px">⚡</span>
+      <h3 style="margin:0">${esc(t.title)}</h3>
+      <button class="btn btn-sm mla" onclick="$('#${aId}').innerHTML=''">✕ Đóng</button>
+    </div>
+
+    <div class="g2">
+      <div class="field"><label>Tên thành phẩm / Dự án</label><input id="fast-title" value="${esc(prefTitle||t.title)}"></div>
+      <div class="field"><label>Danh mục lưu trữ</label><input id="fast-cat" value="${esc(prefCat||'Mặc định')}"></div>
+    </div>
+
+    ${fields}${motion}
+    <div class="field"><label>Luồng render</label>
+      <select id="rt">
+        <option value="auto">🤖 Tự động (AI chọn luồng phù hợp)</option>
+        <option value="fast_remotion">⚡ Nhanh (FFmpeg)</option>
+        <option value="heavy_mimicmotion">🔥 Nâng cao (GPU Motion Transfer)</option>
+      </select>
+    </div>
+    <div class="card-sm mb12" style="background:var(--bg3)"><div id="cp" class="sm bold"></div></div>
+    <div class="row gap-8">
+      <button class="btn btn-p" id="fast-go">🚀 Bắt đầu tạo video</button>
+      <button class="btn" onclick="$('#${aId}').innerHTML=''">Huỷ</button>
+    </div>
+    <div id="fast-res" class="mt16"></div>
+  </div>`;
+
+  const upCost=()=>{
+    const v=$('#rt').value;
+    const txt=v==='fast_remotion'?`⚡ ${pr.fast} credit`
+      :v==='heavy_mimicmotion'?`🔥 ${pr.heavy} credit`
+      :`🤖 ${pr.fast}–${pr.heavy} credit`;
+    $('#cp').innerHTML='💳 Chi phí: '+txt;
+  };
+  $('#rt').onchange=upCost;upCost();
+  $$('#'+aId+' input[type=file]').forEach(inp=>{
+    const zone=inp.closest('.field'); if(!zone) return;
+    ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('drop-hover')}));
+    ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('drop-hover')}));
+    zone.addEventListener('drop',e=>{e.preventDefault();
+      if(e.dataTransfer.files&&e.dataTransfer.files.length){ inp.files=e.dataTransfer.files; inp.dispatchEvent(new Event('change',{bubbles:true})); }});
+  });
+
+  $('#fast-go').onclick=async()=>{
+    const btn=$('#fast-go');
+    try{
+      btn.disabled=true;btn.innerHTML='<div class="spin"></div> Đang gửi...';
+      const input={...dfl};
+      $$('[data-f]').forEach(i=>input[i.dataset.f]=i.value);
+      for(const i of $$('[data-img]'))if(i.files[0])input[i.dataset.img]=await upload(i.files[0]);
+      const g=await post('/api/generate',{
+        template_id:t.id,
+        render_type:$('#rt').value,
+        input_data:input,
+        title:$('#fast-title').value,
+        user_category:$('#fast-cat').value,
+        share_to_library:true
+      });
+      tok(`Đã gửi (${g.render_type}) — trừ ${g.credits_cost} credit`);
+      await refreshMe();trackGen(g.id,'fast-res');
+    }catch(e){ter(e.message);btn.disabled=false;btn.innerHTML='🚀 Bắt đầu tạo video'}
+  };
+}
+
+function bool(val){return val===true||val==='true'||val===1}
+function mountRatioTabs(grid){
+  if(!grid) return;
+  const parent=grid.parentElement;
+  const pills=document.createElement('div');
+  pills.className='cat-pills ratio-pills';
+  parent.insertBefore(pills, grid);
+  let active='9:16';
+  const cards=[...grid.querySelectorAll('.tc')];
+  function counts(){
+    const c={};
+    cards.forEach(el=>{const r=el.dataset.ratio||'9:16';c[r]=(c[r]||0)+1;});
+    return c;
+  }
+  function render(){
+    const c=counts();
+    const order=['9:16','16:9','1:1'].filter(r=>c[r]);
+    pills.innerHTML=order.map(r=>
+      '<button class="cat-pill'+(r===active?' on':'')+'" data-ratio="'+r+'">'+r+' <span class="xs">('+c[r]+')</span></button>'
+    ).join('');
+    pills.style.display=order.length<=1?'none':'';
+    cards.forEach(el=>{el.style.display=(el.dataset.ratio||'9:16')===active?'':'none';});
+  }
+  pills.onclick=function(e){
+    const b=e.target.closest('[data-ratio]');
+    if(!b) return;
+    active=b.dataset.ratio;
+    render();
+  };
+  const detect=(el)=>{
+    const v=el.querySelector('video');
+    if(!v) return;
+    const apply=()=>{
+      const w=v.videoWidth,h=v.videoHeight;
+      if(!w||!h) return;
+      const r=Math.abs(w/h-9/16)<0.08?'9:16':Math.abs(w/h-16/9)<0.08?'16:9':Math.abs(w/h-1)<0.08?'1:1':(w>h?'16:9':'9:16');
+      if(el.dataset.ratio!==r){el.dataset.ratio=r;render();}
+    };
+    v.addEventListener('loadedmetadata', apply);
+    if(v.readyState>=1) apply();
+  };
+  cards.forEach(detect);
+  render();
+}
+function sourceFeatureLabel(v){
+  const map={pipeline:'✨ Pipeline 1-click', standard:'✨ Pipeline 1-click', images_only:'🎨 Chỉ gen ảnh phân cảnh',
+             text_to_video:'📝 Text → Video', image_to_video:'🖼 Ảnh → Video', review_outfit:'👗 Review sản phẩm — biến hình trang phục',
+             batch:'📦 Gen hàng loạt', '':'🎬 Pipeline'};
+  return map[v]||map[''];
+}
+
+function tplPoster(t){
+  const kfs=(t.template_schema||{}).keyframes||[];
+  const k=kfs.find(k=>k.image_url);
+  return k?k.image_url:(t.thumbnail_url||'');
+}
+
+/* ─────────── 2. TEMPLATE CỦA TÔI (LƯU TỪNG THÀNH PHẨM THEO DANH MỤC, TÁI SỬ DỤNG) ─────────── */
+async function pgMyTemplates(activeCat='Tất cả'){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const [allGenerations,cats,templates,mineTpls]=await Promise.all([
+      api('/api/generations'),
+      api('/api/generations/categories'),
+      api('/api/templates'),
+      api('/api/templates?mine=1')
+    ]);
+
+    const categories=['Tất cả',...cats.filter(c=>c!=='Tất cả')];
+    const filtered=activeCat==='Tất cả'?allGenerations:allGenerations.filter(g=>(g.user_category||'Mặc định')===activeCat);
+
+    pc.innerHTML=`
+      <div class="sec">
+        <div>
+          <div class="ptitle">📁 Template của tôi</div>
+          <div class="pdesc">Lưu trữ từng thành phẩm bạn đã làm, phân chia theo danh mục. Click để dùng lại hoặc chỉnh sửa tạo video mới.</div>
+        </div>
+        <button class="btn btn-sm" id="btn-tpl-refresh">🔄 Làm mới</button>
+      </div>
+
+      <!-- Danh mục Tabs -->
+      <div class="cat-pills">
+        ${categories.map(c=>`<button class="cat-pill ${c===activeCat?'on':''}" data-cat="${esc(c)}">${esc(c)} (${c==='Tất cả'?allGenerations.length:allGenerations.filter(x=>(x.user_category||'Mặc định')===c).length})</button>`).join('')}
+      </div>
+
+      <div class="ptitle" style="margin-top:12px">🎬 Dự án đã lưu</div>
+      <div class="pdesc mb8">Nhấn vào dự án để xem chi tiết các yếu tố đã tạo ra sản phẩm (kịch bản, ảnh, model, giọng đọc) và tái sử dụng.</div>
+      ${mineTpls.length?`
+        <div class="ga" id="mine-grid">
+          ${mineTpls.map(t=>`
+            <div class="tc" id="tpl-card-${t.id}" data-ratio="${esc((t.template_schema||{}).aspect_ratio||'9:16')}">
+              <div class="tc-med" data-tpl-detail="${t.id}" tabindex="0" role="button" aria-label="Xem chi tiết dự án" ${t.base_video_url?`onmouseenter="this.querySelector('video')?.play()" onmouseleave="this.querySelector('video')?.pause()"`:''} onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">
+                ${t.base_video_url?`<video muted loop playsinline preload="metadata" poster="${esc(tplPoster(t))}" style="width:100%;height:100%;object-fit:cover" src="${esc(t.base_video_url)}" onclick="this.paused?this.play():this.pause();event.stopPropagation()"></video>`:t.thumbnail_url?`<img src="${esc(t.thumbnail_url)}" alt="${esc(t.title)}" style="width:100%;height:100%;object-fit:cover">`:`<div style="font-size:32px;opacity:.2">🎬</div>`}
+                <div class="tc-actions" onclick="event.stopPropagation()">
+                  <button class="btn btn-p btn-sm" data-tpl-detail="${t.id}">👁 Xem chi tiết</button>
+                  <button class="btn btn-er btn-sm btn-icon" data-tpl-del="${t.id}" title="Xóa dự án" aria-label="Xóa dự án">🗑</button>
+                </div>
+              </div>
+              <div class="tc-body">
+                <div class="row mb4 gap-6">
+                  <span class="badge b-ac">${esc(t.category||'full')}</span>
+                  <span class="badge b-mu">Dự án</span>
+                  <span class="badge b-mu" title="Tính năng tạo">${esc(sourceFeatureLabel((t.template_schema||{}).source_feature||''))}</span>
+                </div>
+                <div class="tc-title">${esc(t.title)}</div>
+                <div class="xs mu">${fmtD(t.created_at)} · ${((t.template_schema||{}).keyframes||[]).length} cảnh · ${esc(String((t.template_schema||{}).duration||'?'))}s</div>
+              </div>
+            </div>`).join('')}
+        </div>`:
+        `<div class="empty" style="padding:18px"><div class="sm mu">Chưa lưu dự án nào. Chạy pipeline trong tab Trợ lý AI — tool sẽ tự lưu dự án vào đây khi xong.</div></div>`}
+      <div id="my-detail" class="mt16"></div>
+
+      <div class="ptitle" style="margin-top:20px">🎞 Thành phẩm đã tạo</div>
+      ${filtered.length?`
+        <div class="ga" id="gen-grid">
+          ${filtered.map(g=>`
+            <div class="tc" id="card-${g.id}" data-ratio="${esc(g.aspect_ratio||'9:16')}">
+              <div class="tc-med" ${g.output_video_url?`onmouseenter="this.querySelector('video')?.play()" onmouseleave="this.querySelector('video')?.pause()"`:''}>
+                ${g.output_video_url?`<video muted loop playsinline preload="metadata" style="width:100%;height:100%;object-fit:cover" src="${esc(g.output_video_url)}" onclick="this.paused?this.play():this.pause();event.stopPropagation()"></video>`:`<div style="font-size:32px;opacity:.2">🎬</div>`}
+                <div class="tc-actions" onclick="event.stopPropagation()">
+                  <button class="btn btn-p btn-sm" data-reuse="${g.id}">🔁 Dùng lại</button>
+                  <button class="btn btn-sm btn-icon" data-edit="${g.id}" title="Đổi tên/danh mục" aria-label="Đổi tên/danh mục">✏️</button>
+                  ${g.output_video_url?`<a href="${esc(g.output_video_url)}" download class="btn btn-sm btn-icon" title="Tải video" aria-label="Tải video">⬇</a>`:''}
+                  <button class="btn btn-er btn-sm btn-icon" data-del="${g.id}" title="Xóa thành phẩm" aria-label="Xóa thành phẩm">🗑</button>
+                </div>
+              </div>
+              <div class="tc-body">
+                <div class="row mb4 gap-6">
+                  <span class="badge b-ac">${esc(g.user_category||'Mặc định')}</span>
+                  <span class="badge ${g.status==='success'?'b-ok':'b-mu'}">${g.status==='success'?'Hoàn thành':g.status}</span>
+                </div>
+                <div class="tc-title">${esc(g.title||'Thành phẩm #'+g.id)}</div>
+                <div class="xs mu">${fmtD(g.created_at)} · 💳 ${g.credits_cost} credit</div>
+              </div>
+            </div>`).join('')}
+        </div>`:
+        `<div class="empty">
+          <div class="empty-ic">📂</div>
+          <div style="font-size:14px;font-weight:600;color:var(--tx2)">Chưa có thành phẩm nào trong danh mục này</div>
+          <div class="sm mu">Hãy tạo video từ Thư viện hoặc Trợ lý AI để lưu vào đây!</div>
+        </div>`}
+
+      <div id="my-gen-area" class="mt24"></div>`;
+
+    mountRatioTabs(document.getElementById('mine-grid'));
+    mountRatioTabs(document.getElementById('gen-grid'));
+    // Bind category clicks
+    $$('[data-cat]').forEach(b=>b.onclick=()=>pgMyTemplates(b.dataset.cat));
+    const rfBtn=$('#btn-tpl-refresh'); if(rfBtn) rfBtn.onclick=()=>pgMyTemplates(activeCat);
+
+    // Bind project (private template) actions
+    const tplsById={}; mineTpls.forEach(t=>{tplsById[t.id]=t});
+    $$('[data-tpl-detail]').forEach(b=>b.onclick=()=>{
+      const t=tplsById[+b.dataset.tplDetail]; if(!t)return;
+      const s=t.template_schema||{}; const scenes=((s.plan||{})['các_cảnh'])||[]; const selx=s.selections||{};
+      let html='<div class="card"><div class="row mb12 gap-6"><div class="ptitle" style="margin:0">🎬 Chi tiết dự án</div><div style="flex:1"></div><button class="btn btn-sm" id="my-detail-close">✕ Đóng</button></div>';
+      if(t.base_video_url) html+='<div style="text-align:center"><video controls src="'+esc(t.base_video_url)+'" style="max-width:100%;max-height:360px;border-radius:8px;background:#000"></video></div>';
+      else if(t.thumbnail_url) html+='<div style="text-align:center"><img src="'+esc(t.thumbnail_url)+'" alt="" style="max-width:100%;max-height:320px;border-radius:8px;background:#000"></div>';
+      if(!t.base_video_url) html+='<div class="card-sm mb8" style="background:var(--gold-soft);border-color:var(--gold-line)"><div class="xs">Dự án này không có video final — tool chỉ tạo clip phôi, bạn tự edit (CapCut/Premiere).</div></div>';
+      html+='<div class="row gap-6 mt8" style="flex-wrap:wrap">'
+        +'<span class="badge b-ac">'+esc(t.title)+'</span>'
+        +'<span class="badge b-mu">'+esc(sourceFeatureLabel(s.source_feature))+'</span>'
+        +(s.duration?'<span class="badge b-mu">'+esc(String(s.duration))+'s</span>':'')
+        +(s.aspect_ratio?'<span class="badge b-mu">'+esc(s.aspect_ratio)+'</span>':'')
+        +(s.language?'<span class="badge b-mu">'+(s.language==='en'?'English':'Tiếng Việt')+'</span>':'')
+        +(s.use_tts?'<span class="badge b-ok">TTS: '+esc(s.voice||'')+'</span>':'')
+        +'</div>';
+      if(s.idea) html+='<div class="mt8"><div class="xs bold mu">Ý TƯỞNG</div><div>'+esc(s.idea)+'</div></div>';
+      if(selx&&(selx.llm||selx.image_generate||selx.video_i2v)) html+='<div class="mt8"><div class="xs bold mu">MODEL ĐÃ DÙNG</div><div class="xs">LLM: '+esc(selx.llm||'')+' · Ảnh: '+esc(selx.image_generate||'')+' · Video: '+esc(selx.video_i2v||'')+'</div></div>';
+      if(scenes.length){
+        html+='<div class="mt8"><div class="xs bold mu">KỊCH BẢN ('+scenes.length+' cảnh)</div><div class="tw"><table style="font-size:12px"><tr><th>#</th><th>Shot</th><th>Hành động</th><th>Thoại</th></tr>';
+        scenes.forEach(function(sc,idx){ html+='<tr><td>'+(sc.stt||idx+1)+'</td><td>'+esc(sc.loại_shot||'')+'</td><td>'+esc((sc.hành_động||'').slice(0,80))+'</td><td>'+esc((sc.thoại||'').slice(0,60))+'</td></tr>'; });
+        html+='</table></div></div>';
+      }
+      const failCnt=(s.keyframes||[]).filter(k=>!k.video_url).length;
+      if(failCnt>0 && s.clip_only && !s.images_only){
+        html+='<div class="card-sm mb8" style="background:var(--gold-soft);border-color:var(--gold-line)"><div class="sm bold">⚠️ Còn '+failCnt+'/'+((s.keyframes||[]).length)+' cảnh chưa có clip phôi</div><div class="xs mu mt4">Bấm "Dùng lại/Sửa dự án" để điền lại cấu hình rồi bấm "Bắt đầu Pipeline" để tạo lại cảnh lỗi, hoặc bấm nút dưới đây để chỉ gen lại các cảnh lỗi.</div><div class="mt6"><button class="btn btn-warn btn-sm" id="btn-tpl-retry-failed">🔁 Tạo lại '+failCnt+' cảnh lỗi</button></div></div>';
+      }
+      const kfs=(s.keyframes||[]);
+      if(kfs.length){
+        html+='<div class="mt8"><div class="xs bold mu">TỪNG CẢNH (ảnh + clip phôi)</div><div class="ga">';
+        kfs.forEach(function(kf,idx){
+          html+='<div class="card-sm"><div class="xs bold mb4">Cảnh '+(kf.stt||idx+1)+(kf['giai_đoạn']?' · '+esc(kf['giai_đoạn']):'')+'</div>'
+            +(kf.image_url?'<img src="'+esc(kf.image_url)+'" style="width:100%;border-radius:6px">':'')
+            +(kf.video_url?'<video controls src="'+esc(kf.video_url)+'" style="width:100%;margin-top:6px;border-radius:6px"></video>'
+              +'<a class="btn btn-p btn-sm mt4" href="'+esc(kf.video_url)+'" download>⬇ Tải clip</a>':'')
+            +(kf.audio_url?'<a class="btn btn-sm mt4" href="'+esc(kf.audio_url)+'" download>⬇ Thoại TTS</a>':'')
+            +'</div>';
+        });
+        html+='</div></div>';
+      }
+      html+='<div class="row gap-6 mt12">'
+        +'<button class="btn btn-p" id="btn-tpl-reuse">🔁 Dùng lại với cấu hình này</button>'
+        +(t.base_video_url?'<a href="'+esc(t.base_video_url)+'" download class="btn btn-sm">⬇ Tải video</a>':'')
+        +'<button class="btn btn-er btn-sm" id="btn-tpl-del">🗑 Xóa dự án</button></div></div>';
+      const box=document.getElementById('my-detail'); box.innerHTML=html; box.scrollIntoView({behavior:'smooth'});
+      document.getElementById('my-detail-close').onclick=()=>{box.innerHTML='';};
+      const rb2=document.getElementById('btn-tpl-retry-failed');
+      if(rb2){
+        rb2.onclick=async ()=>{
+          const s2=s; const jobId=s2.job_id||'';
+          if(!jobId){ter('Không tìm thấy job_id để tái tạo cảnh lỗi');return;}
+          rb2.disabled=true; rb2.innerHTML='<div class="spin"></div> Đang tạo lại...';
+          try{
+            const r=await post('/api/assistant/pipeline/'+jobId+'/retry-failed',{});
+            tok('Đã xử lý lại '+(r.retried||0)+' cảnh lỗi — kết quả cập nhật trong Template của tôi');
+            pgMyTemplates(activeCat);
+          }catch(e){ ter(e.message); rb2.disabled=false; rb2.innerHTML='🔁 Tạo lại cảnh lỗi'; }
+        };
+      }
+      document.getElementById('btn-tpl-reuse').onclick=()=>{
+        window._prefillPipeline={idea:s.idea||'',duration:s.duration,aspect_ratio:s.aspect_ratio,language:s.language,voice:s.voice,use_tts:s.use_tts,model_llm:(selx.llm||''),model_image:(selx.image_generate||''),model_video:(selx.video_i2v||''),mode:s.mode||'standard',hook_seconds:s.hook_seconds||3,character_image_url:s.character_image_url||'',outfit_image_url:s.outfit_image_url||''};
+        pgAI();
+      };
+      const doTplDel=async()=>{
+        if(!confirm('Xóa dự án "'+t.title+'"? Hành động không thể hoàn tác.'))return;
+        try{ await del('/api/templates/'+t.id); tok('Đã xóa dự án'); pgMyTemplates(activeCat); }catch(e){ter(e.message)}
+      };
+      document.getElementById('btn-tpl-del').onclick=doTplDel;
+    });
+    $$('[data-tpl-del]').forEach(b=>b.onclick=async()=>{
+      const id=+b.dataset.tplDel; const t=tplsById[id];
+      if(!confirm('Xóa dự án "'+((t&&t.title)||('#'+id))+'"? Hành động không thể hoàn tác.'))return;
+      try{ await del('/api/templates/'+id); tok('Đã xóa dự án'); pgMyTemplates(activeCat); }catch(e){ter(e.message)}
+    });
+    $$('[data-del]').forEach(b=>b.onclick=async()=>{
+      const gid=+b.dataset.del;
+      if(!confirm('Xóa thành phẩm #'+gid+'? Hành động không thể hoàn tác.'))return;
+      try{ await del('/api/generations/'+gid); tok('Đã xóa thành phẩm'); pgMyTemplates(activeCat); }catch(e){ter(e.message)}
+    });
+
+    // Bind Reuse click
+    $$('[data-reuse]').forEach(b=>b.onclick=()=>{
+      const gid=+b.dataset.reuse;
+      const gen=allGenerations.find(x=>x.id===gid);
+      if(!gen)return;
+      const tpl=templates.find(x=>x.id===gen.template_id)||{id:gen.template_id,title:gen.title,template_schema:{ai_video:gen.render_type.startsWith('ai')}};
+      openGen(tpl,'my-gen-area',gen.input_data,gen.title,gen.user_category);
+    });
+
+    // Bind Edit title/category
+    $$('[data-edit]').forEach(b=>b.onclick=async()=>{
+      const gid=+b.dataset.edit;
+      const gen=allGenerations.find(x=>x.id===gid);
+      if(!gen)return;
+      const newTitle=prompt('Nhập tên mới cho thành phẩm:',gen.title||'');
+      if(newTitle===null)return;
+      const newCat=prompt('Nhập danh mục lưu trữ mới:',gen.user_category||'Mặc định');
+      if(newCat===null)return;
+      try{
+        await patch('/api/generations/'+gid,{title:newTitle,user_category:newCat});
+        tok('Đã cập nhật danh mục & tên!');
+        pgMyTemplates(activeCat);
+      }catch(e){ter(e.message)}
+    });
+
+  }catch(e){pc.innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+/* ─────────── 2b. GEN HÀNG LOẠT (REVIEW TỪNG SẢN PHẨM) ─────────── */
+async function pgBatch(){
+  const pc=$('#page');
+  pc.innerHTML=`
+    <div class="sec">
+      <div>
+        <div class="ptitle">📦 Gen hàng loạt — Review từng sản phẩm</div>
+        <div class="pdesc">Upload 1 ảnh nhân vật + nhiều ảnh sản phẩm (chọn nhiều ảnh hoặc 1 file .zip). Tool chạy <b>lần lượt từng sản phẩm</b> theo luồng review: hook → biến hình → đánh giá → cận chi tiết sản phẩm. Mỗi sản phẩm nhận về clip phôi (không dựng final) và tự động lưu vào <b>Template của tôi</b>. Sản phẩm còn lại nằm trong hàng chờ; mỗi sản phẩm chỉ xử lý 1 lần.</div>
+      </div>
+    </div>
+    <div class="card mb16">
+      <div class="g2 mb12">
+        <div class="field">
+          <label>Ảnh nhân vật (bắt buộc)</label>
+          <input type="file" id="b-char" accept="image/*" style="font-size:12px">
+        </div>
+        <div class="field">
+          <label>Ảnh sản phẩm (nhiều ảnh, hoặc 1 file .zip)</label>
+          <input type="file" id="b-products" accept="image/*,.zip" multiple style="font-size:12px">
+          <div class="xs mu mt2" id="b-file-info">Chưa chọn file (tối đa 20 sản phẩm/batch)</div>
+        </div>
+      </div>
+      <div class="g3 mb12">
+        <div class="field"><label>Model LLM (kịch bản)</label><select id="b-llm"><option value="">Đang tải...</option></select></div>
+        <div class="field"><label>Model ảnh (keyframe)</label><select id="b-img"><option value="">Đang tải...</option></select></div>
+        <div class="field"><label>Model video</label><select id="b-video"><option value="">Đang tải...</option></select></div>
+      </div>
+      <div class="g3 mb12">
+        <div class="field"><label>Thời lượng mỗi kịch bản (giây)</label>
+          <input type="number" id="b-dur" min="10" max="300" value="30" style="width:120px">
+        </div>
+        <div class="field"><label>Thời lượng hook mỗi video (giây)</label>
+          <input type="number" id="b-hook" min="1" max="10" value="3" style="width:120px">
+        </div>
+        <div class="field"><label>Tỉ lệ khung hình</label>
+          <select id="b-ratio"><option value="9:16" selected>9:16 (TikTok, Reels)</option><option value="16:9">16:9 (YouTube ngang)</option><option value="1:1">1:1 (Vuông)</option></select>
+        </div>
+      </div>
+      <div class="g2 mb12">
+        <div class="field"><label>Ngôn ngữ thoại</label>
+          <select id="b-lang"><option value="vi" selected>Tiếng Việt</option><option value="en">English</option></select>
+        </div>
+        <div class="field"><label>Giọng đọc (TTS)</label>
+          <select id="b-voice"><option value="native" selected>🔊 Âm thanh gốc AI (không TTS)</option><option value="auto">Tự động theo giới tính</option><option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option><option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option></select>
+          <div class="row gap-6 mt4" style="align-items:center"><label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0"><input type="checkbox" id="b-tts"> Bật TTS</label>
+          <button class="btn btn-sm" id="b-voice-preview">🔊 Nghe thử</button></div>
+        </div>
+      </div>
+      <div class="field"><label>Yêu cầu chung cho cả batch (tuỳ chọn)</label>
+        <textarea id="b-idea" rows="2" placeholder="Ví dụ: review thời trang nữ, phong cách trẻ trung, giọng vui vẻ..."></textarea>
+      </div>
+      <button class="btn btn-p" id="b-start" style="padding:12px 24px;font-size:15px">🚀 Bắt đầu gen hàng loạt</button>
+      <button class="btn btn-er" id="b-stop" style="padding:12px 24px;font-size:15px;display:none">⏹ Dừng batch</button>
+      <div id="b-progress" class="mt16"></div>
+    </div>
+  </div>`;
+
+  setTimeout(async function(){
+    const steps=[{el:'b-llm',st:'llm'},{el:'b-img',st:'image_generate'},{el:'b-video',st:'video_i2v'}];
+    for(const s of steps){
+      const sel=document.getElementById(s.el); if(!sel) continue;
+      try{
+        const res=await api('/api/assistant/models?step='+s.st);
+        const models=res.models||[];
+        sel.innerHTML='';
+        models.forEach(function(m){
+          const o=document.createElement('option');
+          o.value=m.id; o.disabled=!m.enabled;
+          o.textContent=m.enabled?('🟢 '+(m.price_label||m.name)):('🔴 Tắt — '+m.name);
+          o.dataset.enabled=m.enabled?'1':'0';
+          sel.appendChild(o);
+        });
+        const def=models.find(x=>x.enabled); if(def) sel.value=def.id;
+      }catch(e){ sel.innerHTML='<option value="">Lỗi tải model: '+esc(e.message)+'</option>'; }
+    }
+    const bPreviewBtn=document.getElementById('b-voice-preview');
+    if(bPreviewBtn) bPreviewBtn.onclick=async()=>{
+      let voice=document.getElementById('b-voice').value;
+      const lang=(document.getElementById('b-lang')||{}).value||'vi';
+      if(voice==='native') voice='auto';
+      const demoText=lang==='en'?'Hello, this is a voice demo.':'Xin chào, đây là giọng đọc demo.';
+      bPreviewBtn.disabled=true; bPreviewBtn.textContent='Đang tạo...';
+      try{ const r=await post('/api/assistant/voice-preview',{voice:voice,text:demoText,language:lang});
+        if(r&&r.url){ new Audio(window.location.origin+r.url).play().catch(e=>ter('Lỗi phát: '+e.message)); }
+        else ter('Không nhận được URL audio');
+      }catch(e){ter(e.message)}
+      bPreviewBtn.disabled=false; bPreviewBtn.textContent='🔊 Nghe thử';
+    };
+    const info=document.getElementById('b-file-info');
+    ['b-char','b-products'].forEach(id=>attachDrop(id));
+    wireFileInfo('b-char');
+    const prodInput=document.getElementById('b-products');
+    if(prodInput&&info) prodInput.onchange=()=>{
+      const fs=[...(prodInput.files||[])];
+      if(!fs.length){ info.textContent='Chưa chọn file (tối đa 20 sản phẩm/batch)'; return; }
+      const zip=fs.find(f=>f.name.toLowerCase().endsWith('.zip'));
+      info.textContent = zip && fs.length===1
+        ? ('File ZIP: '+zip.name+' — ảnh bên trong sẽ được tách tự động')
+        : (fs.length+' file đã chọn — mỗi ảnh là 1 sản phẩm, sẽ làm lần lượt');
+    };
+    const btnStart=document.getElementById('b-start');
+    const btnStop=document.getElementById('b-stop');
+    const prog=document.getElementById('b-progress');
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    const BADGE={queued:['b-warn','⏳ Hàng chờ'],running:['b-warn','🛠 Đang làm'],done:['b-ok','✅ Hoàn tất'],failed:['b-er','❌ Lỗi'],cancelled:['b-er','⏹ Đã hủy']};
+
+    function itemHtml(it){
+      const st=BADGE[it.status]||BADGE.queued;
+      let h='<div class="card-sm mb8 b-item">';
+      h+='<div class="row" style="justify-content:space-between;align-items:center">'
+        +'<div><b>Sản phẩm #'+it.stt+'</b> '+esc(it.title||'')+'</div>'
+        +'<span class="badge '+st[0]+'">'+st[1]+'</span></div>';
+      h+='<div class="pb mt6"><div class="pf" style="width:'+Math.max(0,Math.min(100,it.progress||0))+'%"></div></div>';
+      h+='<div class="xs mu mt2">'+esc(it.step||'')+'</div>';
+      if(it.status==='failed'&&it.error) h+='<div class="xs er mt2">'+esc(String(it.error).slice(0,400))+'</div>';
+      if(it.status==='done'){
+        const p=it.plan||{}; const sc=p['các_cảnh']||[];
+        h+='<div class="xs mt4">📋 '+sc.length+' cảnh · '+(p['tổng_thời_lượng']||0)+' giây';
+        if(it.saved_template_id) h+=' · 💾 Đã lưu Template #'+it.saved_template_id;
+        h+='</div>';
+        if(sc.length){
+          h+='<div class="tw mt4"><table style="font-size:11px"><tr><th>#</th><th>Giai đoạn</th><th>Shot</th><th>Hành động</th><th>Thoại</th></tr>';
+          sc.forEach(function(s,i){
+            h+='<tr><td>'+(s.stt||i+1)+'</td><td>'+esc(s['giai_đoạn']||'')+'</td><td>'+esc(s.loại_shot||'')+'</td><td>'+esc((s['hành_động']||'').slice(0,50))+'</td><td>'+esc((s['thoại']||'').slice(0,50))+'</td></tr>';
+          });
+          h+='</table></div>';
+        }
+        const kfs=(it.keyframes||[]).filter(k=>k.image_url);
+        if(kfs.length){
+          h+='<div class="xs mt6"><b>Ảnh keyframe:</b></div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">';
+          kfs.forEach(function(k,i){
+            h+='<a href="'+esc(k.image_url)+'" target="_blank"><img src="'+esc(k.image_url)+'" style="width:90px;height:120px;object-fit:cover;border-radius:6px" title="Cảnh '+(k.stt||i+1)+'"></a>';
+          });
+          h+='</div>';
+        }
+        h+='<div class="mt8"><button class="btn btn-ok btn-sm" data-open-templates="1">📁 Xem trong Template của tôi</button></div>';
+      }
+      return h+'</div>';
+    }
+
+    function renderBatch(st){
+      const c=st.counts||{};
+      const total=st.total||0;
+      const finished=(c.done||0)+(c.failed||0)+(c.cancelled||0);
+      const timed=(st.items||[]).filter(it=>it.started_at&&it.finished_at);
+      let eta='';
+      if(timed.length){
+        const avg=timed.reduce((s,it)=>s+(new Date(it.finished_at)-new Date(it.started_at)),0)/timed.length;
+        const remaining=(st.items||[]).filter(it=>it.status==='queued'||it.status==='running').length;
+        if(remaining>0){
+          const sec=Math.round(avg*remaining/1000);
+          eta=' · ⏱ Ước tính còn ~'+(sec>=60?Math.ceil(sec/60)+' phút':sec+' giây');
+        }
+      }
+      let h='<div class="card-sm mb8"><div class="row" style="justify-content:space-between">'
+        +'<b>Batch '+esc(st.batch_id)+'</b><span class="xs mu">'+finished+'/'+total+' sản phẩm đã xử lý'+eta+'</span></div>'
+        +'<div class="pb mt6"><div class="pf" style="width:'+(total?Math.round(finished/total*100):0)+'%"></div></div></div>';
+      (st.items||[]).forEach(function(it){ h+=itemHtml(it); });
+      prog.innerHTML=h;
+      $$('[data-open-templates]').forEach(function(b){
+        b.onclick=function(){ tab='mytemplates'; localStorage.tab=tab; render(); };
+      });
+      const failed=(st.counts||{}).failed||0;
+      if(failed>0 && st.status!=='running'){
+        const rb=document.createElement('div');
+        rb.className='mt8';
+        rb.innerHTML='<button class="btn btn-p btn-sm" id="btn-retry-batch-failed">🔁 Thử lại '+failed+' sản phẩm lỗi (tốn credit)</button>';
+        prog.appendChild(rb);
+        rb.querySelector('#btn-retry-batch-failed').onclick=async function(){
+          this.disabled=true; this.textContent='⏳ Đang chạy lại '+failed+' sản phẩm...';
+          try{
+            const r=await post('/api/assistant/batch/'+st.batch_id+'/retry-failed',{});
+            tok('Đã đưa '+r.retrying+' sản phẩm lỗi vào chạy lại — credit trừ như bình thường');
+            await pollBatch(st.batch_id);
+            tok('Batch thử lại hoàn tất — kết quả xem trong Template của tôi');
+          }catch(e){ ter(e.message); this.disabled=false; this.textContent='🔁 Thử lại '+failed+' sản phẩm lỗi (tốn credit)'; }
+        };
+      }
+    }
+
+    async function pollBatch(bid){
+      for(let i=0;i<1200;i++){
+        await sleep(2500);
+        const st=await api('/api/assistant/batch/'+bid+'/status');
+        renderBatch(st);
+        if(st.status==='done'||st.status==='cancelled') return st.status;
+      }
+      return 'timeout';
+    }
+
+    if(btnStop) btnStop.onclick=async function(){
+      const id=window._currentBatchId; if(!id) return;
+      try{ await post('/api/assistant/batch/'+id+'/cancel',{}); tok('Đã dừng batch'); }catch(e){ ter(e.message); }
+    };
+
+    btnStart.onclick=async function(){
+      const charFile=document.getElementById('b-char')?.files[0];
+      if(!charFile){ ter('Vui lòng upload ảnh nhân vật'); return; }
+      const files=[...(document.getElementById('b-products')?.files||[])];
+      if(!files.length){ ter('Vui lòng chọn ít nhất 1 ảnh sản phẩm (hoặc file .zip)'); return; }
+      const bad=['b-llm','b-img','b-video'].map(id=>document.getElementById(id))
+        .find(s=>s&&s.options[s.selectedIndex]&&s.options[s.selectedIndex].disabled);
+      if(bad){ ter('Model đang chọn đã bị tắt — chọn model khác'); return; }
+      btnStart.disabled=true; btnStart.textContent='Đang tải ảnh lên...';
+      if(btnStop) btnStop.style.display='';
+      try{
+        const charUrl=await upload(charFile);
+        let urls=[],titles=[];
+        for(const f of files){
+          if(f.name.toLowerCase().endsWith('.zip')){
+            const fd=new FormData(); fd.append('file',f);
+            const r=await fetch('/api/assistant/batch/extract',{method:'POST',headers:{Authorization:'Bearer '+token},body:fd});
+            let d=null; try{ d=await r.json(); }catch{}
+            if(!r.ok) throw new Error((d&&d.detail)||'Không tách được file ZIP');
+            urls.push(...(d.urls||[])); titles.push(...(d.titles||[]));
+          } else {
+            urls.push(await upload(f));
+            titles.push(f.name.replace(/\.[^.]+$/,''));
+          }
+        }
+        if(!urls.length) throw new Error('Không có ảnh sản phẩm hợp lệ');
+        if(urls.length>20) throw new Error('Tối đa 20 sản phẩm mỗi batch — hãy chia nhỏ file');
+        btnStart.textContent='Đang tạo batch...';
+        const sub=await post('/api/assistant/batch',{
+          idea: document.getElementById('b-idea').value.trim(),
+          model_llm: document.getElementById('b-llm').value,
+          model_image: document.getElementById('b-img').value,
+          model_video: document.getElementById('b-video').value,
+          duration: +(document.getElementById('b-dur').value||30),
+          hook_seconds: +(document.getElementById('b-hook').value||3),
+          aspect_ratio: document.getElementById('b-ratio').value,
+          language: document.getElementById('b-lang').value,
+          voice: document.getElementById('b-voice').value,
+          use_tts: document.getElementById('b-tts')?.checked||false,
+          character_image_url: charUrl,
+          product_image_urls: urls,
+          product_titles: titles,
+        });
+        window._currentBatchId=sub.batch_id;
+        btnStart.textContent='⏳ Batch đang chạy...';
+        prog.innerHTML='<div class="card-sm"><span class="warn">Batch bắt đầu: 1 sản phẩm/lần, các sản phẩm còn lại xếp hàng chờ...</span></div>';
+        const fin=await pollBatch(sub.batch_id);
+        btnStart.disabled=false; btnStart.textContent='🚀 Bắt đầu gen hàng loạt';
+        if(btnStop) btnStop.style.display='none';
+        tok(fin==='done'?'Batch hoàn tất — kết quả đã lưu vào Template của tôi':'Batch đã dừng');
+      }catch(e){
+        ter(e.message);
+        btnStart.disabled=false; btnStart.textContent='🚀 Bắt đầu gen hàng loạt';
+        if(btnStop) btnStop.style.display='none';
+      }
+    };
+  },0);
+}
+/* ─────────── 3. TRỢ LÝ AI (LUỒNG GEN VIDEO 5 BƯỚC HOÀN CHỈNH) ─────────── */
+async function pgAI(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const [m,imgModels,pricingData]=await Promise.all([
+      api('/api/ai/models'),
+      api('/api/assistant/check-image-models'),
+      api('/api/pricing')
+    ]);
+
+    // Model options displaying explicit CREDIT PRICE (Requirement 7)
+    const mkO=(grp,def)=>m.models.filter(x=>x.group===grp||x.step===grp).map(x=>
+      `<option value="${esc(x.id)}" ${x.enabled?'':'disabled'} ${x.id===def?'selected':''}>${x.enabled?(x.price>0?x.price+' credit — ':'Free — '):'🔴 Tắt — '}${esc(x.name)}</option>`).join('');
+
+    pc.innerHTML=`
+      <div class="sec">
+        <div>
+          <div class="ptitle">🤖 Trợ lý AI — Tạo Clip Phôi &amp; Ảnh Phân Cảnh</div>
+          <div class="pdesc">Ý tưởng ➔ Phân tích &amp; Kịch bản ➔ Ảnh keyframe ➔ Video từng cảnh ➔ Tải clip về tự edit. Tool không dựng video final, không nối cảnh/xfade/nhạc — khách tự edit.</div>
+        </div>
+      </div>
+
+      <!-- AUTO PIPELINE: 1 click tự động -->
+<div class="card mb24" style="border:2px solid rgba(212,175,55,0.4);background:linear-gradient(135deg,rgba(212,175,55,0.08),rgba(240,217,138,0.05))">
+  <div class="row mb12">
+    <span class="step-num" style="background:linear-gradient(135deg,#f0d98a,#d4af37)">⚡</span>
+    <h3 style="margin:0">Pipeline tự động (1 click)</h3>
+    <span class="xs mu mla">Chọn model mỗi giai đoạn → nhập ý tưởng → tool làm hết</span>
+    <button class="btn btn-sm" id="btn-toggle-pipeline" style="margin-left:8px">Thu gọn ▲</button>
+  </div>
+  <div id="ap-pipeline-body">
+  <div class="g3 mb12">
+    <div class="field">
+      <label>Model LLM (kịch bản)</label>
+      <select id="ap-llm">${mkO('llm',m.default_script)}</select>
+      <span class="xs mu ml8" id="st-llm"></span>
+    </div>
+    <div class="field" id="ap-img-field">
+      <label>Model ảnh (keyframe)</label>
+      <select id="ap-img">${mkO('image_generate',m.default_vision||m.default_script)}</select>
+      <span class="xs mu ml8" id="st-img"></span>
+    </div>
+    <div class="field" id="ap-video-field">
+      <label>Model video</label>
+      <select id="ap-video">${mkO('video_i2v','minimax-h3-768p')}</select>
+      <span class="xs mu ml8" id="st-video"></span>
+    </div>
+    <div class="field" id="ap-tts-field">
+      <label>Giọng đọc (TTS)</label>
+      <select id="ap-voice">
+        <option value="native" selected>🔊 Âm thanh gốc từ AI (không TTS)</option>
+        <option value="auto">Tự động theo giới tính nhân vật</option>
+        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
+        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:12px">
+        <input type="checkbox" id="ap-use-tts"> Bật giọng đọc (TTS)
+      </label>
+      <div class="xs mu mt2">Mặc định giữ âm thanh gốc AI (khẩu hình + cảm xúc của nhân vật). Tick TTS để thay bằng giọng đọc.</div>
+      <div class="row" style="gap:4px;margin-top:4px">
+        <button class="btn btn-sm" id="btn-voice-preview">🔊 Nghe thử</button>
+        <input type="file" id="ap-voice-upload" accept="audio/*" style="display:none">
+        <button class="btn btn-sm" id="btn-voice-upload">🎤 Tải giọng</button>
+      </div>
+      <div class="xs mu" id="ap-voice-status"></div>
+      <div class="xs mu" id="ap-cloned-voices"></div>
+    </div>
+    <div class="field" id="ap-char-field">
+      <label>Ảnh nhân vật (tuỳ chọn)</label>
+      <input type="file" id="ap-char-img" accept="image/*" style="font-size:12px">
+      <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:12px">
+        <input type="checkbox" id="ap-use-char-img" checked> Dùng ảnh này làm khung hình đầu cho video
+      </label>
+    </div>
+    <div class="field">
+      <label>Chế độ tạo video</label>
+      <select id="ap-mode">
+        <option value="standard" selected>🎬 Video thường (từ ý tưởng)</option>
+        <option value="review_outfit">👗 Review sản phẩm — biến hình trang phục</option>
+        <option value="text_to_video">📝 Text → Video (chỉ prompt, không ảnh)</option>
+        <option value="image_to_video">🖼 Ảnh → Video (ảnh + prompt)</option>
+        <option value="images_only">🎨 Chỉ gen ảnh phân cảnh (không gen video)</option>
+      </select>
+      <div class="xs mu mt2">Review: upload nhân vật (đang mặc đồ gốc) + ảnh bộ đồ muốn review → tool tự làm hook, biến hình, lời đánh giá và cận chi tiết sản phẩm.</div>
+    </div>
+    <div class="field" id="ap-review-fields" style="display:none">
+      <label>Ảnh bộ đồ / sản phẩm muốn review</label>
+      <input type="file" id="ap-outfit-img" accept="image/*" style="font-size:12px">
+      <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px">
+        Thời lượng hook (giây)
+        <input type="number" id="ap-hook-sec" min="1" max="10" value="3" style="width:70px">
+      </label>
+      <div class="xs mu mt2">Hook mở đầu gây tò mò; phần còn lại dành cho biến hình, review và cận chi tiết sản phẩm.</div>
+    </div>
+  </div>
+  <div class="field">
+    <label>Ý tưởng video (độ dài, chủ đề, nhân vật, phong cách)</label>
+    <textarea id="ap-idea" rows="3" placeholder="Ví dụ: Video 60 giây chủ đề nấu ăn, nhân vật nữ trẻ, phong cách điện ảnh..."></textarea>
+  </div>
+  <div class="g2 mb12">
+    <div class="field">
+      <label>Thời lượng kịch bản (giây) — tổng thời lượng các cảnh; tool chỉ tạo clip phôi</label>
+      <input type="hidden" id="ap-dur" value="60">
+      <div id="ap-dur-chips" class="row" style="gap:6px;flex-wrap:wrap"></div>
+      <div class="row" style="gap:6px;margin-top:6px">
+        <input type="number" id="ap-dur-custom" min="10" max="300" placeholder="Hoặc nhập tuỳ ý (10-300s)" style="width:180px">
+        <button class="btn btn-sm btn-p" id="ap-dur-apply">Thêm</button>
+      </div>
+      <div id="ap-dur-picked" class="xs mu mt4"></div>
+    </div>
+    <div class="field">
+      <label>Tỉ lệ khung hình</label>
+      <select id="ap-ratio">
+        <option value="9:16" selected>9:16 (TikTok, Reels)</option>
+        <option value="16:9">16:9 (YouTube ngang)</option>
+        <option value="1:1">1:1 (Vuông)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Ngôn ngữ thoại</label>
+      <select id="ap-lang">
+        <option value="vi" selected>Tiếng Việt</option>
+        <option value="en">English</option>
+      </select>
+      <div class="xs mu mt2">Thành phẩm nói đúng ngôn ngữ bạn chọn (cảnh video AI + giọng đọc nếu bật TTS).</div>
+    </div>
+  </div>
+  <div class="xs mu mb8" id="ap-estimate"></div>
+  <button class="btn btn-p" id="btn-ap-start" style="padding:12px 24px;font-size:15px">⚡ Bắt đầu Pipeline tự động</button>
+  <button class="btn btn-er" id="btn-ap-stop" style="padding:12px 24px;font-size:15px;display:none">⏹ Dừng</button>
+  <div id="ap-progress" class="mt16"></div>
+  </div>
+</div>
+
+<!-- Side-by-side preview panel -->
+<div id="ap-preview" class="hide mt24">
+  <div class="card mb12">
+    <h3 class="mb12">📊 Tiến độ pipeline</h3>
+    <div id="ap-stages" class="mb12"></div>
+    <div class="pb mb8"><div class="pf" id="ap-bar" style="width:0%"></div></div>
+    <div class="xs mu" id="ap-step-text"></div>
+  </div>
+  <!-- Tabs — dạng thẻ, tối đa 5 thẻ -->
+  <div class="preview-tabs" id="ap-tabs" role="tablist">
+    <button class="preview-tab on" data-ptab="prompt" role="tab" aria-selected="true">
+      <div class="tab-ic">📋</div><div class="tab-lb">Prompt</div><div class="tab-sub">kịch bản + prompt ảnh/video</div>
+    </button>
+    <button class="preview-tab" data-ptab="images" role="tab" aria-selected="false">
+      <div class="tab-ic">🖼</div><div class="tab-lb">Ảnh</div><div class="tab-sub">keyframe từng cảnh</div>
+    </button>
+    <button class="preview-tab" data-ptab="videos" role="tab" aria-selected="false">
+      <div class="tab-ic">🎥</div><div class="tab-lb">Video phôi</div><div class="tab-sub">tự edit sau khi tải</div>
+    </button>
+  </div>
+  <div id="ap-tab-prompt" class="card mb12"></div>
+  <div id="ap-tab-images" class="card mb12 hide"></div>
+  <div id="ap-tab-videos" class="card mb12 hide"></div>
+</div>
+      </div>`;
+
+    // Populate pipeline model selects from assistant models API
+    setTimeout(async function() {
+      const steps = [
+        { el: 'ap-llm', step: 'llm', def: 'deepseek-v4-pro-0813' },
+        { el: 'ap-img', step: 'image_generate', def: 'deepseek-v4-flash-vision' },
+        { el: 'ap-video', step: 'video_i2v', def: 'minimax-h3-768p' },
+      ];
+      for (const s of steps) {
+        const sel = document.getElementById(s.el);
+        if (!sel) continue;
+        try {
+          const res = await api('/api/assistant/models?step=' + s.step);
+          const models = res.models || [];
+          sel.innerHTML = '';
+          models.forEach(function(m) {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.disabled = !m.enabled;
+            const priceLabel = m.price_label || (m.price > 0 ? m.price + ' credit - ' : 'Free - ') + m.name;
+            opt.textContent = m.enabled ? ('🟢 ' + priceLabel) : ('🔴 Tắt — ' + m.name);
+            opt.dataset.durations = JSON.stringify(m.durations || []);
+            opt.dataset.enabled = m.enabled ? '1' : '0';
+            sel.appendChild(opt);
+          });
+          const def = models.find(x => x.id === s.def && x.enabled) || models.find(x => x.enabled);
+          if (def) sel.value = def.id;
+        } catch(e) {
+          sel.innerHTML = '<option value="">Lỗi tải model: ' + esc(e.message) + '</option>';
+        }
+      }
+      const vSel=document.getElementById('ap-video');
+      const durBox=document.getElementById('ap-dur-chips');
+      const durHidden=document.getElementById('ap-dur');
+      const durPicked=document.getElementById('ap-dur-picked');
+      if(durBox&&durHidden){
+        // Thời lượng ở đây = tổng thời lượng kịch bản mà tool chia các cảnh theo đó (không phải thời lượng video final — tool không dựng final).
+        // Mốc clip của model (Veo 4/6/8s...) chỉ dùng nội bộ khi pipeline chia cảnh.
+        const DUR_PRESETS=[15,30,60,90,120];
+        let curDur=String(durHidden.value||"60");
+        function renderDurChips(){
+          durBox.innerHTML=DUR_PRESETS.map(d=>`<button type="button" class="btn btn-sm ${String(d)===curDur?'btn-p':'btn'}" data-dur="${d}">${d}s</button>`).join('');
+          $$('[data-dur]').forEach(b=>b.onclick=()=>{
+            curDur=b.dataset.dur;
+            durHidden.value=curDur;
+            durPicked.textContent='Đã chọn: '+curDur+' giây (thời lượng kịch bản)';
+            renderDurChips();
+            if(typeof apEstimate==='function') apEstimate();
+          });
+        }
+        durPicked.textContent='Đã chọn: '+curDur+' giây (thời lượng kịch bản)';
+        renderDurChips();
+        const durApply=document.getElementById('ap-dur-apply');
+        const durCustom=document.getElementById('ap-dur-custom');
+        if(durApply&&durCustom){
+          durApply.onclick=()=>{
+            const v=parseInt(durCustom.value);
+            if(!v||v<10||v>300){ter('Nhập thời lượng từ 10 đến 300 giây');return;}
+            curDur=String(v);
+            durHidden.value=curDur;
+            durPicked.textContent='Đã chọn: '+curDur+' giây (thời lượng kịch bản)';
+            durCustom.value='';
+            renderDurChips();
+            if(typeof apEstimate==='function') apEstimate();
+          };
+          durCustom.onkeydown=e=>{if(e.key==='Enter'){durApply.click();e.preventDefault()}};
+        }
+      }
+      if(vSel){
+        vSel.onchange=()=>{ updStatus('ap-video','st-video'); };
+      }
+      function updStatus(selId, badgeId) {
+        const sel=document.getElementById(selId);
+        const badge=document.getElementById(badgeId);
+        if(!sel||!badge) return;
+        const opt=sel.options[sel.selectedIndex];
+        if(!opt||!opt.value){badge.innerHTML='<span class="badge b-er">Không có model khả dụng</span>';return;}
+        const en=opt.dataset.enabled==='1';
+        badge.innerHTML=en?'<span class="badge b-ok">✓ Đang bật</span>':'<span class="badge b-er">🔴 Đang tắt</span>';
+      }
+      updStatus('ap-llm','st-llm');
+      updStatus('ap-img','st-img');
+      updStatus('ap-video','st-video');
+      function apEstimate(){
+        const box=document.getElementById('ap-estimate'); if(!box) return;
+        const duration=+document.getElementById('ap-dur').value||60;
+        const numScenes=Math.max(1, Math.round(duration/5));
+        const modeNow = (document.getElementById('ap-mode')||{}).value||'standard';
+        const imgOnly = modeNow==='images_only';
+        const noImg = imgOnly || modeNow==='text_to_video' || modeNow==='image_to_video';
+        const sel={llm:document.getElementById('ap-llm').value};
+        if(!noImg) sel.image_generate=document.getElementById('ap-img').value;
+        if(!imgOnly) sel.video_i2v=document.getElementById('ap-video').value;
+        post('/api/assistant/estimate',{selections:sel,duration:duration,num_scenes:numScenes})
+          .then(r=>{ const t=(r&&r['tổng_credit']!=null)?r['tổng_credit']:0;
+            const parts=[]; if(r.llm) parts.push('LLM '+r.llm.giá+'/lượt ×1'); if(r.image) parts.push('Ảnh '+r.image.tổng+' ('+r.image['số_lượng']+' ảnh)'); if(r.video) parts.push('Video '+r.video.tổng+' ('+r.video['số_lượng']+' clip)');
+            const modeHint = imgOnly?'· chỉ gen ảnh':(modeNow==='text_to_video'?'· Text → Video':(modeNow==='image_to_video'?'· Ảnh → Video':''));
+            box.innerHTML='Ước tính trước khi gen: <b>'+t+' credit</b>'+(parts.length?' — '+parts.join(' + '):'')+(modeHint?' <span class="xs mu">'+modeHint+'</span>':''); })
+          .catch(()=>{ box.textContent=''; });
+      }
+      const _apLlm=document.getElementById('ap-llm');
+      if(_apLlm) _apLlm.onchange=()=>{ updStatus('ap-llm','st-llm'); apEstimate(); };
+      const _apImg=document.getElementById('ap-img');
+      if(_apImg) _apImg.onchange=()=>{ updStatus('ap-img','st-img'); apEstimate(); };
+      const _apVideo=document.getElementById('ap-video');
+      if(_apVideo) _apVideo.onchange=()=>{ updStatus('ap-video','st-video'); apEstimate(); };
+      apEstimate();
+      // Voice upload (clone)
+      const voiceUploadBtn=document.getElementById('btn-voice-upload');
+      const voiceUploadInput=document.getElementById('ap-voice-upload');
+      const voiceStatus=document.getElementById('ap-voice-status');
+      const clonedBox=document.getElementById('ap-cloned-voices');
+      const renderCloned=async()=>{
+        if(!clonedBox) return;
+        try{
+          const res=await api('/api/assistant/voices-cloned');
+          const list=res.voices||[];
+          clonedBox.innerHTML=list.length
+            ? '<div class="mt8 bold">🎤 Giọng đã lưu ('+list.length+')</div>'+list.map(v=>`
+                <div class="row gap-6 mt4" style="align-items:center">
+                  <button class="btn btn-sm" data-play="${esc(v.url)}" title="Nghe mẫu">▶</button>
+                  <span class="sm">${esc(v.name)}${v.provider==='elevenlabs'?' · <span class="badge b-ok">đã nhân bản</span>':' · <span class="badge b-mu">mẫu lưu</span>'} · ${Math.round((v.size||0)/1024)}KB</span>
+                  <button class="btn btn-er btn-sm" data-delvoice="${esc(v.id)}" title="Xoá giọng">🗑</button>
+                </div>`).join('')
+            : '';
+          // Đồng bộ giọng clone vào dropdown giọng đọc (AI + batch)
+          ['ap-voice','b-voice'].forEach(selId=>{
+            const sel=document.getElementById(selId);
+            if(!sel) return;
+            sel.querySelectorAll('[data-clone]').forEach(o=>o.remove());
+            const grp=sel.querySelector('optgroup[label*="Giọng clone"]') || (()=>{
+              const g=document.createElement('optgroup'); g.label='🎤 Giọng clone của bạn'; sel.appendChild(g); return g;
+            })();
+            list.filter(v=>v.voice_value).forEach(v=>{
+              const o=document.createElement('option');
+              o.value=v.voice_value; o.textContent='🎤 '+v.name+' (giọng đã nhân bản)'; o.setAttribute('data-clone','1');
+              grp.appendChild(o);
+            });
+          });
+          clonedBox.querySelectorAll('[data-play]').forEach(b=>b.onclick=()=>{ new Audio(b.dataset.play).play().catch(()=>{}); });
+          clonedBox.querySelectorAll('[data-delvoice]').forEach(b=>b.onclick=async()=>{
+            if(!confirm('Xoá giọng này khỏi tool?')) return;
+            try{ await del('/api/assistant/voices-cloned/'+b.dataset.delvoice); tok('Đã xoá giọng'); renderCloned(); }catch(e){ter(e.message)}
+          });
+        }catch(e){ clonedBox.innerHTML=''; }
+      };
+      if(voiceUploadBtn&&voiceUploadInput){
+        voiceUploadBtn.onclick=()=>voiceUploadInput.click();
+        voiceUploadInput.onchange=async()=>{
+          const f=voiceUploadInput.files[0];
+          if(!f){return;}
+          voiceStatus.textContent='Đang tải lên...';
+          try{
+            const fd=new FormData();fd.append('file',f);
+            const r=await fetch('/api/assistant/voice-upload',{method:'POST',headers:{'Authorization':'Bearer '+token},body:fd});
+            const d=await r.json();
+            if(!r.ok)throw new Error(d.detail||'Upload thất bại');
+            voiceStatus.textContent = d.provider === 'elevenlabs'
+              ? 'Đã nhân bản giọng "'+d.name+'" — chọn trong danh sách giọng đọc để dùng'
+              : 'Đã lưu mẫu "'+d.name+'" — có thể chọn trong danh sách giọng đọc';
+            voiceUploadInput.value='';
+            renderCloned();
+          }catch(e){ter(e.message);voiceStatus.textContent='';}
+        };
+        renderCloned();
+      }
+      // Voice preview
+      const voicePreviewBtn=document.getElementById('btn-voice-preview');
+      if(voicePreviewBtn){
+        voicePreviewBtn.onclick=async()=>{
+          let voice=document.getElementById('ap-voice').value;
+          const lang=(document.getElementById('ap-lang')||{}).value||'vi';
+          if(voice==='native'){ voice='auto'; }
+          const demoText=lang==='en'?'Hello, this is a voice demo.':'Xin chào, đây là giọng đọc demo.';
+          voicePreviewBtn.disabled=true;
+          voicePreviewBtn.textContent='Đang tạo...';
+          try{
+            const r=await post('/api/assistant/voice-preview',{voice:voice,text:demoText,language:lang});
+            if(r&&r.url){
+              const audio=new Audio(window.location.origin + r.url);
+              audio.onerror=()=>ter('Không phát được audio');
+              audio.play().catch(e=>ter('Lỗi phát: '+e.message));
+            } else {
+              ter('Không nhận được URL audio');
+            }
+          }catch(e){ter(e.message)}
+          voicePreviewBtn.disabled=false;
+          voicePreviewBtn.textContent='🔊 Nghe thử';
+        };
+      }
+      ['ap-char-img','ap-outfit-img','ap-voice-upload'].forEach(id=>attachDrop(id));
+      ['ap-char-img','ap-outfit-img'].forEach(wireFileInfo);
+      // Đồng bộ "ngữ chọn giọng" <-> checkbox TTS + ngôn ngữ thoại
+      const apVoiceSel=document.getElementById('ap-voice');
+      const apTtsChk=document.getElementById('ap-use-tts');
+      const apLangSel=document.getElementById('ap-lang');
+      const VOICES_BY_LANG={
+        vi:[{v:'vi-VN-HoaiMyNeural',t:'Hoài My (Nữ)'},{v:'vi-VN-NamMinhNeural',t:'Nam Minh (Nam)'}],
+        en:[{v:'en-US-AriaNeural',t:'Aria (Female)'},{v:'en-US-GuyNeural',t:'Guy (Male)'}],
+      };
+      function rebuildVoiceOptions(){
+        if(!apVoiceSel) return;
+        const lang=apLangSel?apLangSel.value:'vi';
+        const prev=apVoiceSel.value;
+        apVoiceSel.innerHTML='<option value="native">🔊 Âm thanh gốc từ AI (không TTS)</option>'+
+          '<option value="auto">Tự động theo giới tính nhân vật</option>'+
+          VOICES_BY_LANG[lang].map(o=>`<option value="${o.v}">${o.t}</option>`).join('');
+        // Giữ lựa chọn nếu vẫn hợp lệ; ngược lại về mặc định âm thanh gốc
+        apVoiceSel.value=[...apVoiceSel.options].some(o=>o.value===prev)?prev:'native';
+        if(apTtsChk) apTtsChk.checked=(apVoiceSel.value!=='native');
+      }
+      if(apVoiceSel&&apTtsChk){
+        apVoiceSel.onchange=()=>{ apTtsChk.checked = (apVoiceSel.value!=='native'); };
+        apTtsChk.onchange=()=>{
+          if(!apTtsChk.checked){ apVoiceSel.value='native'; }
+          else if(apVoiceSel.value==='native'){ apVoiceSel.value='auto'; }
+        };
+      }
+      if(apLangSel){ apLangSel.onchange=rebuildVoiceOptions; rebuildVoiceOptions(); }
+      // Chế độ tạo video: hiện/ẩn đúng phần theo từng chế độ
+      const apMode=document.getElementById('ap-mode');
+      const apReviewFields=document.getElementById('ap-review-fields');
+      const apVideoField=document.getElementById('ap-video-field');
+      const apImgField=document.getElementById('ap-img-field');
+      const apTtsField=document.getElementById('ap-tts-field');
+      const apCharField=document.getElementById('ap-char-field');
+      const syncMode=()=>{
+        const mode=apMode?apMode.value:'standard';
+        const review=mode==='review_outfit';
+        const imagesOnly=mode==='images_only';
+        const textToVideo=mode==='text_to_video';
+        const imageToVideo=mode==='image_to_video';
+        if(apReviewFields) apReviewFields.style.display=review?'':'none';
+        if(apVideoField) apVideoField.style.display=imagesOnly?'none':'';
+        if(apImgField) apImgField.style.display=(textToVideo||imageToVideo)?'none':'';
+        if(apTtsField) apTtsField.style.display=(imagesOnly||textToVideo||imageToVideo)?'none':'';
+        if(apCharField) apCharField.style.display=textToVideo?'none':'';
+        // Gợi ý theo mode: ảnh nhân vật bắt buộc cho image_to_video
+        const charLabel=apCharField?apCharField.querySelector('label'):null;
+        if(charLabel) charLabel.textContent=imageToVideo?'Ảnh nhân vật (bắt buộc)':'Ảnh nhân vật (tuỳ chọn)';
+        const ideaEl=document.getElementById('ap-idea');
+        if(ideaEl) ideaEl.placeholder = review
+          ? 'Tuỳ ý (tuỳ chọn): ai review, phong cách, điểm muốn nhấn mạnh... Tool sẽ tự viết kịch bản từ 2 ảnh.'
+          : textToVideo
+            ? 'Ví dụ: "Cô gái mặc váy hoa đi giữa cánh đồng lúa lúc hoàng hôn, máy tele, film grain 35mm..."'
+            : imageToVideo
+              ? 'Ví dụ: "Nhân vật trong ảnh bước vào phòng khách sạn sang trọng, camera dolly in, ánh nắng chiều qua cửa sổ..."'
+              : imagesOnly
+                ? 'Ví dụ: 60 giây chủ đề nấu ăn, nhân vật nữ trẻ — tool chỉ gen ảnh phân cảnh, không gen video.'
+                : 'Ví dụ: Video 60 giây chủ đề nấu ăn, nhân vật nữ trẻ, phong cách điện ảnh...';
+        if(typeof apEstimate==='function') apEstimate();
+      };
+      if(apMode){ apMode.onchange=syncMode; syncMode(); }
+      // Toggle pipeline body collapse
+      const toggleBtn=document.getElementById('btn-toggle-pipeline');
+      const pipelineBody=document.getElementById('ap-pipeline-body');
+      if(toggleBtn&&pipelineBody){
+        toggleBtn.onclick=()=>{
+          const hidden=pipelineBody.classList.toggle('hide');
+          toggleBtn.textContent=hidden?'Mở rộng ▼':'Thu gọn ▲';
+        };
+      }
+      // Điền sẵn cấu hình khi "Dùng lại" từ dự án đã lưu (Template của tôi)
+      const pf=window._prefillPipeline;
+      if(pf){
+        window._prefillPipeline=null;
+        window._resumeCharUrl=pf.character_image_url||'';
+        window._resumeOutfitUrl=pf.outfit_image_url||'';
+        try{
+          if(pf.idea) document.getElementById('ap-idea').value=pf.idea;
+          const setSel=(id,v)=>{ if(!v)return; const s=document.getElementById(id); if(s&&[...s.options].some(o=>o.value===v&&!o.disabled)) s.value=v; };
+          setSel('ap-llm',pf.model_llm); setSel('ap-img',pf.model_image); setSel('ap-video',pf.model_video);
+          if(pf.aspect_ratio) document.getElementById('ap-ratio').value=pf.aspect_ratio;
+          if(pf.language){ const ls=document.getElementById('ap-lang'); if(ls){ ls.value=pf.language; if(ls.onchange) ls.onchange(); } }
+          if(pf.voice){ const vs=document.getElementById('ap-voice'); if(vs&&[...vs.options].some(o=>o.value===pf.voice)) vs.value=pf.voice; }
+          if(pf.use_tts){ const tc=document.getElementById('ap-use-tts'); if(tc) tc.checked=true; }
+          if(pf.mode){ const ms=document.getElementById('ap-mode'); if(ms){ ms.value=pf.mode; if(ms.onchange) ms.onchange(); } }
+          if(pf.hook_seconds){ const hs=document.getElementById('ap-hook-sec'); if(hs) hs.value=pf.hook_seconds; }
+          if(pf.duration){
+            const dh=document.getElementById('ap-dur'); if(dh) dh.value=String(pf.duration);
+            const chip=document.querySelector('#ap-dur-chips [data-dur="'+pf.duration+'"]');
+            if(chip&&chip.onclick) chip.onclick();
+            else { const dp=document.getElementById('ap-dur-picked'); if(dp) dp.textContent='Đã chọn: '+pf.duration+' giây'; }
+          }
+          updStatus('ap-llm','st-llm'); updStatus('ap-img','st-img'); updStatus('ap-video','st-video');
+          tok('Đã điền cấu hình từ dự án — kiểm tra rồi bấm Bắt đầu Pipeline');
+        }catch(e){}
+      }
+    }, 100);
+
+
+
+    const btnApStart = document.getElementById('btn-ap-start');
+    const btnApStop = document.getElementById('btn-ap-stop');
+    if (btnApStop) {
+      btnApStop.onclick = async function() {
+        // Find the current job id from the progress area or a stored variable
+        const jobId = window._currentPipelineJobId;
+        if (jobId) {
+          try { await post('/api/assistant/pipeline/' + jobId + '/cancel', {}); tok('Đã dừng pipeline'); } catch(e) { ter(e.message); }
+        }
+        btnApStop.style.display = 'none';
+        btnApStart.disabled = false;
+        btnApStart.innerHTML = '⚡ Bắt đầu Pipeline tự động';
+      };
+    }
+    if (btnApStart) {
+      btnApStart.onclick = async function() {
+        const mode = document.getElementById('ap-mode')?.value || 'standard';
+        let idea = document.getElementById('ap-idea').value.trim();
+        if (!idea && mode === 'review_outfit') {
+          idea = 'Video review sản phẩm: review bộ đồ/sản phẩm trong ảnh, gồm hook, biến hình, đánh giá và cận chi tiết sản phẩm.';
+        }
+        if (!idea) { ter('Vui long nhap y tuong video'); return }
+        const badModel = ['ap-llm','ap-img','ap-video'].map(id=>document.getElementById(id))
+          .find(s=>s && s.options[s.selectedIndex] && s.options[s.selectedIndex].disabled);
+        if (badModel) { ter('Model đang chọn đã bị tắt — vui lòng chọn model khác'); return }
+        const btn = btnApStart;
+        const progressArea = document.getElementById('ap-progress');
+        const previewPanel = document.getElementById('ap-preview');
+        const stagesArea = document.getElementById('ap-stages');
+        const progressBar = document.getElementById('ap-bar');
+        const stepText = document.getElementById('ap-step-text');
+        const tabPrompt = document.getElementById('ap-tab-prompt');
+        const tabImages = document.getElementById('ap-tab-images');
+        const tabVideos = document.getElementById('ap-tab-videos');
+        function activatePreviewTab(name){
+          $$('[data-ptab]').forEach(b=>{
+            const on = b.dataset.ptab===name;
+            b.classList.toggle('on', on);
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+          });
+          ['prompt','images','videos'].forEach(t=>document.getElementById('ap-tab-'+t).classList.add('hide'));
+          document.getElementById('ap-tab-'+name).classList.remove('hide');
+        }
+        $$('[data-ptab]').forEach(btn=>btn.onclick=()=>activatePreviewTab(btn.dataset.ptab));
+        try {
+          btn.disabled = true; btn.innerHTML = '<div class="spin"></div> Dang chay pipeline... (co the mat vai phut)';
+          const stopBtn = document.getElementById('btn-ap-stop');
+          if(stopBtn) stopBtn.style.display='';
+          progressArea.innerHTML = '<div class="card-sm" style="background:var(--warn2)"><span class="warn">Pipeline dang chay: prompt -> anh -> video. Moi buoc can load model AI, hay doi...</span></div>';
+          previewPanel.classList.remove('hide');
+          stagesArea.innerHTML = '<div class="card-sm"><span class="bold">Dang chay pipeline</span></div>';
+          tabPrompt.innerHTML=''; tabImages.innerHTML=''; tabVideos.innerHTML='';
+          progressBar.style.width = '10%';
+          stepText.textContent = 'Dang khoi tao pipeline...';
+
+
+            const charImgFile=document.getElementById('ap-char-img')?.files[0];
+            let charImgUrl=window._resumeCharUrl||'';
+            if(charImgFile && document.getElementById('ap-use-char-img')?.checked){
+              charImgUrl=await upload(charImgFile);
+            }
+            let outfitImgUrl=window._resumeOutfitUrl||'';
+            if (mode === 'review_outfit') {
+              if (!charImgUrl) { ter('Chế độ review cần ảnh nhân vật: upload ảnh nhân vật và tick "Dùng ảnh này"'); return; }
+              const outfitFile=document.getElementById('ap-outfit-img')?.files[0];
+              if (outfitFile) {
+                outfitImgUrl=await upload(outfitFile);
+              } else if (!outfitImgUrl) {
+                ter('Vui lòng upload ảnh bộ đồ/sản phẩm muốn review'); return;
+              }
+            }
+            const sub = await post('/api/assistant/pipeline', {
+              idea: idea,
+              model_llm: document.getElementById('ap-llm').value,
+              model_image: document.getElementById('ap-img').value,
+              model_video: document.getElementById('ap-video').value,
+              duration: +document.getElementById('ap-dur').value,
+              aspect_ratio: document.getElementById('ap-ratio').value,
+              voice: document.getElementById('ap-voice').value,
+              use_tts: document.getElementById('ap-use-tts')?.checked || false,
+              language: document.getElementById('ap-lang')?.value || 'vi',
+              character_image_url: charImgUrl,
+              mode: mode,
+              outfit_image_url: outfitImgUrl,
+              hook_seconds: +(document.getElementById('ap-hook-sec')?.value || 3),
+            });
+            const jobId = sub.job_id;
+            window._currentPipelineJobId = jobId;
+            stepText.textContent = 'Pipeline da bat dau...';
+            for (let ii = 0; ii < 900; ii++) {
+              await new Promise(r => setTimeout(r, 2000));
+              const st = await api('/api/assistant/pipeline/' + jobId + '/status');
+              progressBar.style.width = (st.progress || 0) + '%';
+              stepText.textContent = st.step || st.status;
+              stagesArea.innerHTML = '<div class="card-sm"><span class="bold">' + esc(st.status) + '</span> - ' + esc(st.step || '') + '</div>';
+              if (st.status === 'done') {
+                progressBar.style.width = '100%';
+                stepText.textContent = 'Hoan tat!';
+                const r = st.result || {};
+                // Tab Prompt: storyboard table + toàn bộ prompt trong textarea read-only
+                let promptHtml = '<h4 class="mb8">📋 Prompt / Kịch bản</h4>';
+                if (r.plan && r.plan['các_cảnh']) {
+                  const planScenes = r.plan['các_cảnh'];
+                  promptHtml += '<div class="xs mu mb8">' + planScenes.length + ' cảnh, ' + (r.plan['tổng_thời_lượng']||0) + ' giây · LLM dùng tiếng Anh, thoại hiện tiếng ' + ((r.plan['language']||'vi')==='en'?'Anh':'Việt') + '</div>';
+                  promptHtml += '<div class="tw"><table style="font-size:12px"><tr><th>#</th><th>Shot</th><th>Góc</th><th>Hành động</th><th>Thoại</th><th>Prompt ảnh</th></tr>';
+                  planScenes.forEach(function(sc,idx){
+                    promptHtml += '<tr><td>' + (sc.stt||idx+1) + '</td><td>' + esc(sc.loại_shot||'') + '</td><td>' + esc(sc.góc_máy||'') + '</td><td>' + esc((sc.hành_động||'').slice(0,60)) + '</td><td>' + esc((sc.thoại||'').slice(0,40)) + '</td><td class="xs mu">' + esc((sc.image_prompt||'').slice(0,80)) + '</td></tr>';
+                  });
+                  promptHtml += '</table></div>';
+                  // Toàn bộ prompt (kịch bản + prompt ảnh/video từng cảnh) cho khách xem chi tiết
+                  const dump = [];
+                  dump.push('===== PROMPT STORYBOARD — gửi LLM =====');
+                  dump.push('Y tưởng video: ' + idea);
+                  dump.push('Model LLM: ' + (r.plan['model_used']||''));
+                  dump.push('Ngôn ngữ thoại (reply language): ' + ((r.plan['language']||'vi')==='en'?'English':'Tiếng Việt'));
+                  dump.push('Số cảnh: ' + planScenes.length);
+                  dump.push('');
+                  dump.push('===== TOÀN BỘ JSON KỊCH BẢN =====');
+                  dump.push(JSON.stringify(r.plan, null, 2));
+                  dump.push('');
+                  dump.push('===== PROMPT ẢNH / VIDEO TỪNG CẢNH =====');
+                  planScenes.forEach(function(sc,i){
+                    dump.push('--- Cảnh ' + (sc.stt||i+1) + (sc['giai_đoạn'] ? ' · ' + sc['giai_đoạn'] : '') + ' ---');
+                    dump.push('Prompt ảnh:   ' + (sc.image_prompt||'(trống)'));
+                    dump.push('Prompt video: ' + (sc.video_prompt||'(trống)'));
+                    dump.push('');
+                  });
+                  promptHtml += '<h4 class="mb8 mt12">📝 Toàn bộ prompt (kịch bản + từng cảnh)</h4>';
+                  promptHtml += '<textarea class="prompt-dump" readonly spellcheck="false">' + esc(dump.join('\n')) + '</textarea>';
+                  promptHtml += '<div class="row mt8" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
+                    + '<div class="xs mu">Bôi đen toàn bộ rồi Ctrl+C — hoặc bấm nút bên phải</div>'
+                    + '<button class="btn btn-sm btn-p" id="btn-copy-prompts">📋 Copy toàn bộ prompt</button></div>';
+                } else {
+                  promptHtml += '<div class="card-sm">Chưa có kịch bản.</div>';
+                }
+                document.getElementById('ap-tab-prompt').innerHTML = promptHtml;
+                // Bind copy button
+                const copyBtn = document.getElementById('btn-copy-prompts');
+                if(copyBtn){
+                  copyBtn.onclick=function(){
+                    const ta=document.querySelector('.prompt-dump');
+                    if(!ta) return;
+                    ta.select();
+                    try{ document.execCommand('copy'); tok('Đã copy toàn bộ prompt'); }
+                    catch(e){
+                      try{ navigator.clipboard.writeText(ta.value); tok('Đã copy toàn bộ prompt'); }
+                      catch(e2){ ter('Không copy được — hãy tự chọn Ctrl+C'); }
+                    }
+                  };
+                }
+                // Tab Images: grid 5 per row
+                // Tab Images: grid 5 per row, 10 per page with pagination
+                let imgHtml = '<h4 class="mb8">🖼 Ảnh phân cảnh</h4>';
+                const imgs = (r.keyframes||[]).filter(kf=>kf.image_url);
+                if (imgs.length) {
+                  const imgsPerPage = 10;
+                  const totalPages = Math.ceil(imgs.length / imgsPerPage);
+                  function renderImagePage(page) {
+                    const start = (page-1)*imgsPerPage;
+                    const pageImgs = imgs.slice(start, start+imgsPerPage);
+                    let h = '<div class="img-grid">';
+                    pageImgs.forEach(function(kf,idx){
+                      const globalIdx = start + idx;
+                      h += '<div style="text-align:center;cursor:pointer" data-img-idx="' + globalIdx + '">';
+                      h += '<img src="' + esc(kf.image_url) + '" style="width:100%;border-radius:6px;aspect-ratio:9/16;object-fit:cover" onclick="window._showImageLightbox(' + globalIdx + ')">';
+                      h += '<div class="xs mu">Cảnh ' + (kf.stt||globalIdx+1) + ' · ' + esc(kf.loại_shot||'') + '</div>';
+                      h += '</div>';
+                    });
+                    h += '</div>';
+                    // Pagination controls
+                    if (totalPages > 1) {
+                      h += '<div class="row mt8" style="gap:4px;justify-content:center">';
+                      for (let pg=1; pg<=totalPages; pg++) {
+                        h += '<button class="btn btn-sm' + (pg===page?' btn-p':'') + '" data-img-page="' + pg + '">' + pg + '</button>';
+                      }
+                      h += '</div>';
+                    }
+                    return h;
+                  }
+                  imgHtml += renderImagePage(1);
+                  // Lightbox function
+                  window._showImageLightbox = function(idx) {
+                    const kf = imgs[idx];
+                    const lb = document.createElement('div');
+                    lb.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer';
+                    lb.innerHTML = '<img src="' + esc(kf.image_url) + '" style="max-width:90%;max-height:90%;border-radius:8px"><div style="position:absolute;bottom:20px;color:#fff;font-size:14px">Cảnh ' + (kf.stt||idx+1) + ' · ' + esc(kf.loại_shot||'') + '</div>';
+                    lb.onclick = () => lb.remove();
+                    document.body.appendChild(lb);
+                  };
+                  // Bind pagination clicks after render
+                  const bindImagePages = function(){
+                    document.querySelectorAll('[data-img-page]').forEach(btn=>{
+                      btn.onclick=()=>{
+                        const container=document.getElementById('ap-tab-images');
+                        if(!container) return;
+                        container.innerHTML = '<h4 class="mb8">🖼 Ảnh phân cảnh</h4>' + renderImagePage(parseInt(btn.dataset.imgPage));
+                        bindImagePages();
+                      };
+                    });
+                  };
+                  setTimeout(bindImagePages, 100);
+                } else {
+                  imgHtml += '<div class="card-sm">Chưa có ảnh.</div>';
+                }
+                (r.keyframes||[]).forEach(function(kf,idx){ if(kf.image_error) imgHtml += '<div class="xs er">Ảnh cảnh ' + (kf.stt||idx+1) + ': ' + esc(kf.image_error) + '</div>'; });
+                document.getElementById('ap-tab-images').innerHTML = imgHtml;
+                const imgOnly = !!(r && r.images_only);
+                if(imgOnly){
+                  activatePreviewTab('images');
+                  tok('Hoàn tất — chỉ gen ảnh phân cảnh (không gen video)');
+                } else {
+                  renderVideosTab(jobId, r);
+                  // Chuyển sang Tab Clips khi hoàn tất
+                  activatePreviewTab('videos');
+                  tok('Hoàn tất — tải clip phôi về và tự edit!');
+                }
+                break;
+              }
+              if (st.status === 'failed') {
+                progressBar.style.width = '0%';
+                stepText.textContent = 'Loi';
+                stagesArea.innerHTML = '<div class="card-sm" style="background:var(--er2)"><span class="er">Loi: ' + esc(st.error || 'Loi khong xac dinh') + '</span></div>';
+                ter('Pipeline that bai: ' + (st.error || ''));
+                break;
+              }
+            }
+        } catch(e) {
+          progressBar.style.width = '0%';
+          stepText.textContent = 'Loi';
+          stagesArea.innerHTML = '<div class="card-sm" style="background:var(--er2)"><span class="er">Loi: ' + esc(e.message) + '</span></div>';
+          ter(e.message);
+        } finally {
+          btn.disabled = false; btn.innerHTML = '⚡ Bắt đầu Pipeline tự động';
+          const stopBtn2 = document.getElementById('btn-ap-stop');
+          if(stopBtn2) stopBtn2.style.display='none';
+        }
+      };
+    }
+
+  }catch(e){pc.innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+/* ─────────── 4. TẢI VIDEO MẠNG XÃ HỘI (TÍNH NĂNG ĐỘC LẬP) ─────────── */
+async function pgDownload(){
+  const pc=$('#page');
+  pc.innerHTML=`
+    <div style="width:80%;margin:0 auto;max-width:1400px" id="dl-page-wrap">
+    <div class="sec">
+      <div>
+        <div class="ptitle">📥 Tải Video Mạng Xã Hội</div>
+        <div class="pdesc">Tải video & ảnh không logo/watermark từ TikTok, Douyin, YouTube, Facebook Reels, X (Twitter), Pinterest... về máy chủ và thiết bị của bạn.</div>
+      </div>
+    </div>
+
+    <div class="card mb20">
+      <h3>🔗 Nhập liên kết</h3>
+      <div class="pdesc mb14">Dán link 1 video để tải luôn, hoặc link kênh/trang/playlist để lấy toàn bộ video, ảnh kèm lượt like và bình luận.</div>
+      <div class="field">
+        <label>Đường dẫn</label>
+        <div class="row gap-8 dl-url-row" style="flex-wrap:wrap">
+          <input id="dl-url" style="flex:1;min-width:220px" placeholder="https://www.tiktok.com/@... hoặc https://www.youtube.com/@... hoặc https://www.youtube.com/playlist?list=...">
+          <button class="btn btn-p" id="btn-dl-resolve" style="flex-shrink:0;padding:9px 18px">🔍 Xem danh sách kênh</button>
+          <button class="btn btn-ok" id="btn-dl-one" style="flex-shrink:0;padding:9px 18px">📥 Tải ngay 1 video</button>
+        </div>
+        <div id="dl-one-progress" class="mt12" style="display:none">
+          <div class="row mb8" style="justify-content:space-between;align-items:center;gap:10px">
+            <span class="xs mu" id="dl-one-stage">🔍 Đang kiểm tra dung lượng…</span>
+            <span class="row gap-8" style="align-items:center"><span class="xs" id="dl-one-eta" style="color:var(--gold);font-variant-numeric:tabular-nums">⏱ --:--</span><span class="xs bold ac" id="dl-one-pct">0%</span></span>
+          </div>
+          <div style="height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;border:1px solid var(--bd)">
+            <div id="dl-one-bar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--gold),#f5d76e);transition:width .3s"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dl-support">
+        <div class="dl-support-t">📥 Tool tải được những gì?</div>
+        <div class="dl-support-g">
+          <span class="dl-chip"><b>TikTok / Douyin</b> — video không watermark + <b>post ảnh</b> (lưu toàn bộ ảnh)</span>
+          <span class="dl-chip"><b>YouTube</b> — video (MP4, chọn best/1080/720/480/audio), playlist &amp; kênh (liệt kê, chọn từng mục)</span>
+          <span class="dl-chip"><b>Facebook / Reels</b> — video &amp; Reels công khai</span>
+          <span class="dl-chip"><b>X (Twitter) · Pinterest · Snapchat</b> — video công khai qua yt-dlp</span>
+        </div>
+        <div class="dl-support-n">
+          ⚠️ Chỉ với nội dung <b>công khai</b> — video riêng tư / yêu cầu đăng nhập (vd. Instagram) cần cookie đăng nhập, hiện <b>chưa hỗ trợ</b>.<br>
+          Giới hạn file: <b>200MB / video</b> (đổi qua biến <b>DOWNLOAD_MAX_MB</b> trong .env) — video vượt giới hạn sẽ bị <b>từ chối trước khi tải</b> (báo <b>✖ Không hỗ trợ</b>, không tải dở). Định dạng tải về: <b>MP4</b> (video) · <b>m4a</b> (chỉ audio) · <b>JPG/PNG/WebP</b> (post ảnh). Sau khi tải về máy, bạn xem/edit lại bằng mọi trình phát hoặc phần mềm cắt video.
+        </div>
+      </div>
+
+      <!-- Danh sách video/ảnh từ kênh/trang (hiện sau khi bấm Xem danh sách) -->
+      <div id="dl-list-wrap" class="mt20" style="display:none">
+        <h3>📺 Danh sách video / ảnh</h3>
+        <div class="row mb8 gap-8" style="align-items:center;flex-wrap:wrap">
+          <span class="xs mu">Tất cả: <b id="dl-total">0</b> mục</span>
+          <button class="btn btn-sm btn-p" id="btn-dl-select-all" style="flex-shrink:0">✅ Chọn tất cả</button>
+          <button class="btn btn-sm btn-ok" id="btn-dl-select-none" style="flex-shrink:0">❌ Bỏ chọn</button>
+          <div id="dl-progress-wrap" style="flex:1;min-width:200px;display:none;margin:0 8px">
+            <div style="height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;border:1px solid var(--bd)">
+              <div id="dl-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--ac),var(--ac2));transition:width .3s"></div>
+            </div>
+            <div class="xs mu mt4" id="dl-progress-text">0%</div>
+          </div>
+          <button class="btn btn-p" id="btn-dl-batch" style="flex-shrink:0;padding:9px 18px;margin-left:auto">📥 Tải các mục đã chọn</button>
+        </div>
+        <div class="quality-hint xs mu mb12">Chất lượng: <b>best</b> = cao nhất có sẵn · <b>1080/720/480</b> = giới hạn độ phân cực · <b>audio</b> = chỉ tải âm thanh</div>
+        <div id="dl-list" class="ga" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px"></div>
+      </div>
+
+      <!-- Kết quả tải batch -->
+      <div id="dl-batch-result" class="mt20"></div>
+
+      <div id="dl-preview" class="mt16"></div>
+    </div>
+
+    <div class="card">
+      <h3>💡 Hướng dẫn & Lưu ý</h3>
+      <ul style="padding-left:18px;font-size:13px;line-height:1.7;color:var(--tx2);margin-top:8px">
+        <li>Video TikTok và Douyin được tự động bóc tách sạch sẽ, <b>không chứa watermark hay logo mờ</b>.</li>
+        <li>Khi dán link kênh/trang, hãy bấm <b>"🔍 Xem danh sách kênh"</b> để tool quét toàn bộ video, ảnh rồi bạn chọn muốn tải cái nào.</li>
+        <li>Sau khi tải về, bạn có thể tải thẳng về máy tính hoặc chuyển sang tính năng <b>"🎙️ Dịch & Thêm Phụ đề"</b> để chèn Vietsub.</li>
+        <li>Tất cả lượt tải video đều được lưu lại an toàn trong <b>Nhật ký tài khoản</b>.</li>
+      </ul>
+    </div>
+    </div>`;
+
+  // ---------- Xem trước trực tiếp trên thẻ ----------
+  let dlItems = [];
+  async function togglePreview(idx){
+    const media=$('#dl-media-'+idx);
+    if(media.dataset.loaded==='1') return; // đã đang chơi video, không làm gì
+    const it=dlItems[idx];
+    try{
+      const r=await api('/api/video/preview?url='+encodeURIComponent(it.url));
+      if(r.video_url){
+        const thumb = media.querySelector('img');
+        const fb = media.querySelector('.dl-thumb-fb');
+        const dur = media.querySelector('div[style*="rgba(0,0,0,.75)"]');
+        const box = media.querySelector('div[style*="rgba(0,0,0,.6)"]');
+        const play = media.querySelector('div[style*="rgba(0,0,0,.7)"][style*="32px"]');
+        media.innerHTML=`<video class="dl-video" controls style="width:100%;height:100%;display:block" src="${esc(r.video_url)}"></video>`;
+        if(thumb) { thumb.style.display='none'; media.prepend(thumb); }
+        if(fb) { fb.style.display='none'; media.appendChild(fb); }
+        if(dur) media.appendChild(dur);
+        if(box) media.appendChild(box);
+        if(play) { media.appendChild(play); play.style.display='none'; }
+        media.dataset.loaded='1';
+        const v=media.querySelector('video');
+        v.play().catch(()=>{});
+      }else{
+        ter('Không phát được video này');
+      }
+    }catch(e){console.warn('preview lỗi',e); ter('Không phát được video này');}
+  }
+
+  // ---------- Xem danh sách kênh/trang/playlist ----------
+  $('#btn-dl-resolve').onclick=async()=>{
+    const url=$('#dl-url').value.trim();
+    if(!url){ter('Vui lòng dán liên kết');return}
+    const btn=$('#btn-dl-resolve');
+    try{
+      btn.disabled=true;btn.innerHTML='<div class="spin"></div> Đang quét...';
+      $('#dl-list-wrap').style.display='none';
+      $('#dl-batch-result').innerHTML='';
+      const r=await post('/api/video/resolve',{url:url});
+      const items=r.items||[];
+      dlItems = items;
+      $('#dl-total').textContent=items.length;
+      if(items.length===0){
+        $('#dl-list-wrap').style.display='block';
+        $('#dl-list').innerHTML='<div class="xs mu">Không tìm thấy video/ảnh nào trên link này.</div>';
+        tok('Không tìm thấy nội dung nào');
+        return;
+      }
+      $('#dl-list').innerHTML = items.map((it,idx)=>{
+        const sel = it.available_qualities||['best','1080','720','480','audio'];
+        const opts = sel.map(q=>`<option value="${esc(q)}" ${q==='720'?'selected':''}>${q}</option>`).join('');
+        const thumb = it.thumbnail || '';
+        return `<div class="dl-card" style="display:flex;flex-direction:column;gap:8px;padding:12px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--radius-sm)">
+          <div id="dl-media-${idx}" class="dl-thumb-wrap" data-idx="${idx}" data-loaded="0" style="position:relative;border-radius:8px;overflow:hidden;background:#0b0d14;aspect-ratio:16/9;cursor:pointer">
+            <img class="dl-thumb" src="${esc(thumb)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block" onerror="this.style.display='none';this.parentElement.querySelector('.dl-thumb-fb').style.display='flex'">
+            <div class="dl-thumb-fb" style="display:none;width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#666;font-size:13px;background:#111">📷</div>
+            ${it.duration?`<div style="position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,.75);color:#fff;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">${fmtT(it.duration)}</div>`:''}
+            <div style="position:absolute;left:8px;top:8px;background:rgba(0,0,0,.6);border-radius:4px;padding:4px 8px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:#fff">
+              <input type="checkbox" class="dl-item" data-idx="${idx}" style="margin:0">
+              <span>Chọn</span>
+            </div>
+            <div style="position:absolute;right:8px;top:8px;background:rgba(0,0,0,.7);border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.4)">▶</div>
+          </div>
+          <div class="bold sm" title="${esc(it.title)}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3">${esc(it.title)}</div>
+          <div class="xs mu" style="display:flex;gap:10px;flex-wrap:wrap">
+            ${it.like_count?`<span>👍 ${it.like_count}</span>`:''}
+            ${it.comment_count?`<span>💬 ${it.comment_count}</span>`:''}
+            ${it.view_count?`<span>👁 ${it.view_count}</span>`:''}
+          </div>
+          <div class="row gap-8" style="align-items:center">
+            <select class="dl-quality" data-idx="${idx}" style="flex:1;padding:7px 9px;border:1px solid var(--bd);border-radius:7px;background:var(--bg3);color:var(--tx);font-size:12px">${opts}</select>
+            <button class="btn btn-sm btn-p dl-one" data-idx="${idx}" style="flex-shrink:0;padding:7px 14px">📥 Tải về máy</button>
+          </div>
+        </div>`;
+      }).join('');
+      // Xem trước trực tiếp trên thẻ: bấm vào ảnh thu nhỏ
+      $$('.dl-thumb-wrap').forEach(el=>{
+        el.onclick=()=>togglePreview(+el.dataset.idx);
+      });
+      // Gán sự kiện chọn từng item
+      $$('.dl-one').forEach(btn=>btn.onclick=async()=>{
+        const idx=+btn.dataset.idx;
+        const it=items[idx];
+        const quality=$$(`.dl-quality[data-idx="${idx}"]`)[0].value;
+        try{ await dlOne(it.url, it.title||'', quality); }
+        catch(e){ ter(e.message||'Lỗi tải video'); }
+      });
+
+      // Chọn tất cả / bỏ chọn
+      $('#btn-dl-select-all').onclick=()=>{$$('.dl-item').forEach(cb=>cb.checked=true);};
+      $('#btn-dl-select-none').onclick=()=>{$$('.dl-item').forEach(cb=>cb.checked=false);};
+
+      // Tải batch
+      $('#btn-dl-batch').onclick=async()=>{
+        const checked=$$('.dl-item:checked');
+        if(checked.length===0){ter('Vui lòng chọn ít nhất một mục');return}
+        const batchItems=Array.from(checked).map(cb=>{
+          const idx=+cb.dataset.idx;
+          const it=items[idx];
+          return {url:it.url, title:it.title||'', quality:$$(`.dl-quality[data-idx="${idx}"]`)[0].value};
+        });
+        await dlBatch(batchItems);
+      };
+
+      $('#dl-list-wrap').style.display='block';
+      tok(`Tìm thấy ${items.length} mục`);
+    }catch(e){
+      ter(e.message);
+    }finally{btn.disabled=false;btn.innerHTML='🔍 Xem danh sách kênh'}
+  };
+
+  // ---------- Poll tiến độ tải (dùng chung: tải đơn / tải từng mục / batch) ----------
+  function fmtEta(s){
+    if(s==null||isNaN(s)) return '⏱ --:--';
+    s=Math.max(0,Math.round(s));
+    const m=Math.floor(s/60), r=s%60;
+    return '⏱ '+String(m).padStart(2,'0')+':'+String(r).padStart(2,'0');
+  }
+  function startDlProgressPoll(jobId, barEl, pctEl, stageEl, etaEl, textEl){
+    const stageText = s => s==='checking' ? '🔍 Đang kiểm tra dung lượng…'
+      : s==='downloading' ? '⬇ Đang tải…'
+      : s==='transcoding' ? '🎞 Đang chuyển sang H.264…'
+      : s==='finished' ? '✔ Tải xong, đang xử lý…'
+      : s==='done' ? '✔ Hoàn tất'
+      : s==='rejected' ? '✖ Không hỗ trợ'
+      : s==='failed' ? '✖ Lỗi tải'
+      : '⬇ Đang tải…';
+    return setInterval(async () => {
+      try{
+        const p = await api('/api/video/download-progress/'+jobId);
+        const pc = Math.max(0, Math.min(100, p.percent||0));
+        if(barEl) barEl.style.width = pc+'%';
+        if(pctEl) pctEl.textContent = pc+'%';
+        if(stageEl) stageEl.textContent = stageText(p.status);
+        if(etaEl) etaEl.textContent = (p.status==='downloading' || p.status==='transcoding') ? fmtEta(p.eta) : (p.status==='done' ? '⏱ 00:00' : '⏱ --:--');
+        if(textEl) textEl.textContent = pc+'% · '+fmtEta(p.eta);
+      }catch(e){ /* server tạm mất kết nối — bỏ qua lần poll này */ }
+    }, 500);
+  }
+
+  // ---------- Tải ngay 1 video (giữ nguyên chức năng cũ) ----------
+  $('#btn-dl-one').onclick=async()=>{
+    const url=$('#dl-url').value.trim();
+    if(!url){ter('Vui lòng dán liên kết video');return}
+    const btn=$('#btn-dl-one');
+    const progWrap=$('#dl-one-progress'), progBar=$('#dl-one-bar'), progPct=$('#dl-one-pct'), progStage=$('#dl-one-stage');
+    const jobId=((crypto.randomUUID && crypto.randomUUID()) || ('job_'+Date.now()));
+    let pollT=null;
+    try{
+      btn.disabled=true;btn.innerHTML='<div class="spin"></div> Đang tải...';
+      $('#dl-preview').innerHTML='';
+      if(progWrap){progWrap.style.display='block'; progBar.style.width='0%'; progPct.textContent='0%'; progStage.textContent='🔍 Đang kiểm tra dung lượng…'; if($('#dl-one-eta'))$('#dl-one-eta').textContent='⏱ --:--';}
+      if(progWrap) pollT=startDlProgressPoll(jobId, progBar, progPct, progStage, $('#dl-one-eta'));
+      const r=await post('/api/video/download',{url:url, job_id:jobId});
+      if(r.images && r.images.length){
+        $('#dl-preview').innerHTML=`
+          <div class="card-sm su" style="background:var(--bg2);border:1px solid rgba(34,211,160,0.3)">
+            <div class="row mb12"><span class="badge b-ok">✅ Tải ${r.images.length} ảnh thành công</span></div>
+            <div class="bold lg mb6">${esc(r.title||'')}</div>
+            <div class="img-grid mt8">${r.images.map(u=>`<a href="${esc(u)}" download class="img-cell" style="display:block"><img src="${esc(u)}" alt="ảnh tải về" loading="lazy" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;border:1px solid var(--bd)"></a>`).join('')}</div>
+            <div class="xs mu mt8">Bấm vào từng ảnh để tải về máy tính.</div>
+          </div>`;
+        tok(`Đã tải ${r.images.length} ảnh về!`);
+        btn.disabled=false;btn.innerHTML='📥 Tải ngay 1 video';
+        if(pollT)clearInterval(pollT);
+        if(progBar)progBar.style.width='100%'; if(progPct)progPct.textContent='100%'; if(progStage)progStage.textContent='✔ Hoàn tất';
+        return;
+      }
+      lastWorkingVideoUrl=r.video_url;
+
+      $('#dl-preview').innerHTML=`
+        <div class="card-sm su" style="background:var(--bg2);border:1px solid rgba(34,211,160,0.3)">
+          <div class="row mb12"><span class="badge b-ok">✅ Tải video thành công</span></div>
+          <div class="g2" style="align-items:center">
+            <video controls src="${esc(r.video_url)}" style="width:100%;max-height:280px;border-radius:var(--radius-sm);background:#000"></video>
+            <div>
+              <div class="bold lg mb6">${esc(r.title)}</div>
+              <div class="xs mu mb16">Thời lượng: <b>${fmtT(r.duration)}</b> · Định dạng: <b>MP4 HD</b></div>
+              <div class="row gap-8" style="flex-wrap:wrap">
+                <a href="${esc(r.video_url)}" download class="btn btn-p">⬇ Tải file MP4 về máy tính</a>
+                <button class="btn btn-ok" id="btn-goto-sub">🎙️ Chuyển sang Dịch & Thêm Sub ➔</button>
+              </div>
+            </div>
+          </div>
+        </div>`;
+      tok('Đã tải video về thành công!');
+      if(pollT)clearInterval(pollT);
+      if(progWrap){ if(progBar)progBar.style.width='100%'; if(progPct)progPct.textContent='100%'; if(progStage)progStage.textContent='✔ Hoàn tất'; }
+
+      if($('#btn-goto-sub')){
+        $('#btn-goto-sub').onclick=()=>{
+          tab='subtitles';
+          render();
+        };
+      }
+    }catch(e){
+      ter(e.message);
+      $('#dl-preview').innerHTML=`<div class="card-sm er" style="background:var(--er2);border:1px solid rgba(248,113,113,0.3)">❌ Lỗi tải: ${esc(e.message)}</div>`;
+      if(pollT)clearInterval(pollT);
+      if(progStage)progStage.textContent = String(e.message||'').includes('Không hỗ trợ') ? '✖ Không hỗ trợ' : '✖ Lỗi tải';
+    }finally{btn.disabled=false;btn.innerHTML='📥 Tải ngay 1 video'}
+  };
+
+  // ---------- Hàm helper tải 1 mục ----------
+  // ---------- Helper: tự động download file về máy người dùng ----------
+  function triggerDownload(url, filename){
+    try{
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || 'video.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }catch(e){
+      console.warn('Tự động download lỗi:', e);
+    }
+  }
+
+  // ---------- Hàm helper tải 1 mục ----------
+  async function dlOne(url, title, quality){
+    const jobId=((crypto.randomUUID && crypto.randomUUID()) || ('job_'+Date.now()));
+    let pollT=null;
+    const progWrap=$('#dl-progress-wrap'), progBar=$('#dl-progress-bar'), progText=$('#dl-progress-text');
+    if(progWrap) progWrap.style.display='block';
+    if(progBar) progBar.style.width='0%';
+    if(progText) progText.textContent='Đang tải “'+(title||'video')+'”… 0% · ⏱ --:--';
+    if(progBar) pollT=startDlProgressPoll(jobId, progBar, null, null, null, progText);
+    try{
+      const r=await post('/api/video/batch-download',{items:[{url,title,quality}], job_id:jobId});
+      if(pollT)clearInterval(pollT);
+      if(progBar)progBar.style.width='100%';
+      if(progText)progText.textContent='Hoàn tất “'+(title||'video')+'”';
+      const res=(r.results||[])[0];
+      if(res.status==='done'){
+      if(res.images && res.images.length){
+        $('#dl-batch-result').innerHTML=`
+          <div class="card-sm su mt8" style="background:var(--bg2);border:1px solid rgba(34,211,160,0.3)">
+            <div class="row mb8"><span class="badge b-ok">✅ ${esc(res.title||title)} — ${res.images.length} ảnh</span></div>
+            <div class="img-grid mt8">${res.images.map(u=>`<a href="${esc(u)}" download style="display:block"><img src="${esc(u)}" alt="ảnh tải về" loading="lazy" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;border:1px solid var(--bd)"></a>`).join('')}</div>
+            <div class="xs mu mt8">Bấm vào từng ảnh để tải về.</div>
+          </div>` + $('#dl-batch-result').innerHTML;
+        tok('Tải xong '+res.images.length+' ảnh — bấm từng ảnh để lưu về máy!');
+        return;
+      }
+      lastWorkingVideoUrl=res.video_url;
+      triggerDownload(res.video_url, (res.title||title||'video') + '.mp4');
+      $('#dl-batch-result').innerHTML=`
+        <div class="card-sm su mt8" style="background:var(--bg2);border:1px solid rgba(34,211,160,0.3)">
+          <div class="row mb8"><span class="badge b-ok">✅ ${esc(res.title||title)}</span></div>
+          <video controls src="${esc(res.video_url)}" style="width:100%;max-height:220px;border-radius:var(--radius-sm);background:#000;margin-bottom:8px"></video>
+          <div class="row gap-8">
+            <a href="${esc(res.video_url)}" download class="btn btn-p">⬇ Tải về máy tính (tải lại nếu cần)</a>
+          </div>
+          <div class="xs mu">Đã bắt đầu lưu về máy của bạn.</div>
+        </div>` + $('#dl-batch-result').innerHTML;
+      tok('Tải xong 1 mục — đã lưu về máy!');
+      }else{
+        ter(res.error||'Lỗi tải');
+      }
+    }catch(e){
+      ter(e.message||'Lỗi tải');
+      if(pollT)clearInterval(pollT);
+      if(progBar)progBar.style.width='0%';
+      if(progText)progText.textContent='Lỗi tải — vui lòng thử lại';
+    }
+  }
+
+  // ---------- Tải nhiều mục ----------
+  async function dlBatch(items){
+    const btn=$('#btn-dl-batch');
+    btn.disabled=true;btn.innerHTML='<div class="spin"></div> Đang tải...';
+      const jobId = (crypto.randomUUID && crypto.randomUUID()) || ('job_'+Date.now());
+      const progWrap=$('#dl-progress-wrap');
+      const progBar=$('#dl-progress-bar');
+      const progText=$('#dl-progress-text');
+      if(progWrap){progWrap.style.display='block';}
+      if(progBar){progBar.style.width='0%';}
+      if(progText){progText.textContent='0%';}
+      let pollT=null;
+      const pollProgress=async()=>{
+        try{
+          const r=await api('/api/video/download-progress/'+jobId);
+          const p=r.percent||0;
+          if(progBar)progBar.style.width=p+'%';
+          if(progText)progText.textContent=p+'% · '+fmtEta(r.eta);
+        }catch(e){}
+      };
+      pollT=setInterval(pollProgress,500);
+    try{
+      const r=await post('/api/video/batch-download',{items,job_id:jobId});
+      const results=r.results||[];
+      const done=results.filter(x=>x.status==='done').length;
+      let html='<h3>📦 Kết quả tải batch</h3>';
+      results.forEach((res,i)=>{
+        if(res.status==='done'){
+          if(res.images && res.images.length){
+            html+=`
+            <div class="card-sm su mb8" style="background:var(--bg2);border:1px solid rgba(34,211,160,0.3)">
+              <div class="row mb8"><span class="badge b-ok">✅ ${esc(res.title||'')} — ${res.images.length} ảnh</span></div>
+              <div class="img-grid mt8">${res.images.map(u=>`<a href="${esc(u)}" download style="display:block"><img src="${esc(u)}" alt="ảnh tải về" loading="lazy" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;border:1px solid var(--bd)"></a>`).join('')}</div>
+              <div class="xs mu">Bấm vào từng ảnh để tải về.</div>
+            </div>`;
+            return;
+          }
+          triggerDownload(res.video_url, (res.title||'video') + '.mp4');
+          html+=`
+            <div class="card-sm su mb8" style="background:var(--bg2);border:1px solid rgba(34,211,160,0.3)">
+              <div class="row mb8"><span class="badge b-ok">✅ ${esc(res.title)}</span></div>
+              ${res.video_url?`<video controls src="${esc(res.video_url)}" style="width:100%;max-height:200px;border-radius:var(--radius-sm);background:#000;margin-bottom:8px"></video>`:''}
+              <div class="row gap-8">
+                ${res.video_url?`<a href="${esc(res.video_url)}" download class="btn btn-p">⬇ Tải về máy tính (tải lại nếu cần)</a>`:''}
+              </div>
+              <div class="xs mu">Đã lưu về máy của bạn.</div>
+            </div>`;
+        }else{
+          html+=`<div class="card-sm er mb8" style="background:var(--er2);color:#fff">${esc(res.title||res.url)} — ${esc(res.error||'Lỗi')}</div>`;
+        }
+      });
+      $('#dl-batch-result').innerHTML=html;
+      if(progBar)progBar.style.width='100%';
+      if(progText)progText.textContent='100%';
+      tok(`Hoàn tất ${done}/${results.length} mục — các file đã được lưu về máy`);
+    }catch(e){
+      ter(e.message);
+      $('#dl-batch-result').innerHTML=`<div class="card-sm er" style="background:var(--er2);color:#fff">❌ Lỗi: ${esc(e.message)}</div>`;
+    }finally{
+      if(pollT)clearInterval(pollT);
+      btn.disabled=false;btn.innerHTML='📥 Tải các mục đã chọn';
+    }
+  }
+}
+/* ─────────── 5. DỊCH THUẬT & THÊM PHỤ ĐỀ / LÀM MỜ VIDEO (TÍNH NĂNG ĐỘC LẬP) ─────────── */
+async function pgSubtitles(){
+  const pc=$('#page');
+  pc.innerHTML=`
+    <div class="sec">
+      <div>
+        <div class="ptitle">🎙️ Dịch thuật & Thêm Phụ đề Video</div>
+        <div class="pdesc">Tự động nhận diện lời thoại, dịch sang ngôn ngữ bạn chọn, thêm phụ đề + làm mờ, và tuỳ chọn lồng tiếng với giọng bạn chọn.</div>
+      </div>
+    </div>
+
+    <!-- KHỐI CHỌN NGUỒN VIDEO -->
+    <div class="card mb16">
+      <h3>1. Chọn video nguồn để xử lý</h3>
+      <div class="pdesc mb14">Bạn có thể tải file video từ máy tính lên, hoặc dùng video vừa tải từ mạng xã hội.</div>
+
+      <div class="g2" style="align-items:start">
+        <div class="card-sm" style="background:var(--bg3)">
+          <div class="bold mb6">📁 Cách A: Tải file video từ máy tính</div>
+          <input type="file" id="sub-file" accept="video/*">
+          <div id="sub-file-info" class="xs mu mt6"></div>
+        </div>
+        <div class="card-sm" style="background:var(--bg3)">
+          <div class="bold mb6">🔗 Cách B: Đường dẫn video (URL)</div>
+          <input id="sub-url-input" value="${esc(lastWorkingVideoUrl)}" placeholder="/media/outputs/... hoặc URL video">
+          <div class="xs mu mt6">Tự động điền video vừa tải về nếu có</div>
+        </div>
+      </div>
+      <div id="sub-source-player" class="mt14"></div>
+    </div>
+
+    <!-- KHỐI PHIÊN ÂM & DỊCH THUẬT -->
+    <div class="card mb16">
+      <h3>2. Phiên âm & Dịch phụ đề</h3>
+      <div class="pdesc mb14">Ngôn ngữ nguồn được tự phát hiện; chọn ngôn ngữ phụ đề đầu ra bên dưới. Phụ đề được dịch theo ngữ cảnh, giữ đúng tên riêng và vừa khung hình.</div>
+      <div class="g2">
+      <div class="field mb12"><label>Ngôn ngữ đầu ra</label>
+        <select id="sub-lang">
+          <option value="vi" selected>Tiếng Việt</option>
+          <option value="en">English</option>
+          <option value="zh">中文 (Chinese)</option>
+          <option value="ja">日本語 (Japanese)</option>
+          <option value="ko">한국어 (Korean)</option>
+          <option value="fr">Français</option>
+          <option value="es">Español</option>
+          <option value="de">Deutsch</option>
+          <option value="ru">Русский</option>
+          <option value="pt">Português</option>
+          <option value="th">ไทย</option>
+          <option value="id">Bahasa Indonesia</option>
+        </select>
+      </div>
+      <div class="field mb12"><label>Độ chính xác nhận dạng</label>
+        <select id="sub-quality">
+          <option value="fast">Nhanh (small) — ~2× nhanh hơn</option>
+          <option value="accurate" selected>Chính xác (medium) — khuyên dùng</option>
+          <option value="best">Tối đa (large-v3) — chậm nhất, đổi tiếng trôi nhất</option>
+        </select>
+      </div>
+      </div>
+      <label class="row gap-8 mb12" style="font-size:13px;cursor:pointer"><input type="checkbox" id="sub-use-llm" checked> <span>Dùng AI để sửa lỗi nghe và dịch chuẩn (tốn credit)</span></label>
+      <button class="btn btn-ok" id="btn-trans-start" style="padding:9px 16px">🎙️ Bắt đầu Phiên âm & Dịch</button>
+      <div class="xs mu mt6" id="trans-elapsed"></div>
+      <div id="trans-status" class="mt8 sm mu"></div>
+    </div>
+
+    <!-- KHỐI CHỈNH SỬA PHỤ ĐỀ (trái) + PREVIEW NHỎ GỌN (phải) -->
+    <div class="g2 mb16" style="align-items:start">
+      <div class="card">
+        <h3>✏️ Chỉnh sửa phụ đề</h3>
+        <div class="field">
+          <label>Nội dung phụ đề SRT — bấm vào từng dòng để sửa trực tiếp</label>
+          <textarea id="sub-srt-box" rows="12" placeholder="Phụ đề theo từng mốc thời gian sẽ xuất hiện ở đây..."></textarea>
+        </div>
+        <div class="field mt8">
+          <label>Chế độ phụ đề</label>
+          <select id="sub-mode">
+            <option value="bilingual" selected>🌐 Song ngữ (gốc + bản dịch)</option>
+            <option value="original">🔤 Bản gốc (ngôn ngữ video)</option>
+            <option value="translated">🌐 Bản dịch (ngôn ngữ đã chọn)</option>
+          </select>
+          <div class="xs mu mt4" id="sub-mode-note"></div>
+        </div>
+        <div id="sub-audio-warning" class="xs er mt8" style="display:none"></div>
+      </div>
+
+      <div class="card" id="sub-preview-card">
+        <h3>👁️ Preview trên video</h3>
+        <div id="sub-preview-wrap" style="position:relative;background:#000;border-radius:var(--radius-sm);overflow:hidden;border:1px solid var(--bd);max-width:230px;margin:0 auto;touch-action:none">
+          <video id="sub-preview-video" controls playsinline preload="metadata" style="width:100%;display:block;background:#000;aspect-ratio:9/16;object-fit:contain"></video>
+          <div id="sub-preview-overlay" spellcheck="false" contenteditable="true" data-cue="" style="position:absolute;left:4%;right:4%;top:auto;bottom:6%;display:flex;align-items:center;justify-content:center;text-align:center;color:#fff;font-weight:800;line-height:1.25;cursor:text;outline:none;text-shadow:0 0 4px #000,0 0 8px #000,-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;user-select:text;-webkit-user-select:text;word-break:break-word;z-index:5"><span id="sub-move-handle" title="Kéo để đổi vị trí phụ đề" contenteditable="false" style="position:absolute;left:-4px;top:-22px;padding:1px 7px;border-radius:8px;background:rgba(0,0,0,.75);color:var(--gold-2);font:600 11px var(--sans);cursor:move;user-select:none">↕ Vị trí</span><span id="sub-size-handle" title="Kéo để chỉnh cỡ chữ" contenteditable="false" style="position:absolute;right:-7px;bottom:-7px;width:14px;height:14px;border-radius:50%;background:var(--gold);border:2px solid #fff;cursor:ns-resize;display:none"></span></div>
+          <div id="sub-preview-blur" style="position:absolute;border:2px dashed var(--gold);background:rgba(10,10,10,.28);backdrop-filter:blur(3px);display:none;pointer-events:auto;touch-action:none;z-index:4;border-radius:4px;cursor:move"><span id="sub-blur-handle" title="Kéo để đổi kích thước vùng mờ" style="position:absolute;right:-7px;bottom:-7px;width:14px;height:14px;border-radius:50%;background:var(--gold);border:2px solid #fff;cursor:nwse-resize"></span></div>
+        </div>
+        <div class="row mt8" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm" id="btn-sub-preview-reload">🔄 Nạp lại video</button>
+          <span class="xs mu" id="sub-preview-info">Chưa có phụ đề để xem thử</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- KHỐI TUỲ BIẾN PHỤ ĐỀ & LÀM MỜ -->
+    <div class="g2 mb16" style="align-items:start">
+      <div class="card">
+        <h3>3. Vị trí & Kiểu hiển thị Subtitle</h3>
+        <div class="field mt12">
+          <label>Vị trí đặt Subtitle trên video</label>
+          <select id="sub-v-pos">
+            <option value="bottom" selected>Dưới cùng (Bottom — Chuẩn điện ảnh)</option>
+            <option value="middle">Chính giữa (Middle — Dễ đọc khi lướt video)</option>
+            <option value="top">Trên cùng (Top — Tránh bị che bởi nút thả tim/bình luận)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Cỡ chữ phụ đề — kéo tay nắm trên video hoặc dùng thanh chỉnh</label>
+          <input type="range" id="sub-v-size" min="8" max="72" value="18" step="1">
+          <div class="xs mu">Cỡ hiện tại: <b id="sub-v-size-label">18px</b></div>
+        </div>
+        <div class="xs mu">Kéo chữ trên video lên/xuống để đổi vị trí; kéo tay nắm vàng ở góc chữ để đổi cỡ. Điều chỉnh sẽ được áp dụng khi xuất.</div>
+      </div>
+
+      <div class="card">
+        <h3>4. Làm mờ vùng video (Logo / Watermark)</h3>
+        <div class="pdesc mb10">Áp dụng bộ lọc mờ (Boxblur) để che bớt logo hoặc ID kênh cũ</div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:12px">
+          <input type="checkbox" id="chk-blur-sub" style="width:auto">
+          <span class="bold">Bật bộ lọc làm mờ</span>
+        </label>
+        <div id="blur-box-inputs" class="hide">
+        <div class="xs mu mb8">Kéo vùng viền nét đứt để di chuyển, kéo chấm vàng để đổi kích thước; toạ độ được đồng bộ vào các ô bên dưới và dùng khi xuất video.</div>
+          <div class="g4 mb8">
+            <div class="field"><label>Toạ độ X</label><input type="number" id="sub-bx" value="20"></div>
+            <div class="field"><label>Toạ độ Y</label><input type="number" id="sub-by" value="20"></div>
+            <div class="field"><label>Rộng (W)</label><input type="number" id="sub-bw" value="240"></div>
+            <div class="field"><label>Cao (H)</label><input type="number" id="sub-bh" value="80"></div>
+          </div>
+          <div class="qa">
+            <button class="qa-btn" onclick="$('#sub-bx').value=20;$('#sub-by').value=20;$('#sub-bw').value=260;$('#sub-bh').value=80">Góc trên trái (Logo)</button>
+            <button class="qa-btn" onclick="$('#sub-bx').value=450;$('#sub-by').value=20;$('#sub-bw').value=260;$('#sub-bh').value=80">Góc trên phải</button>
+            <button class="qa-btn" onclick="$('#sub-bx').value=450;$('#sub-by').value=750;$('#sub-bw').value=260;$('#sub-bh').value=120">Góc dưới phải</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- KHỐI LỒNG TIẾNG TTS (tuỳ chọn) -->
+    <div class="card mb16">
+      <h3>5. Lồng tiếng TTS (tuỳ chọn)</h3>
+      <div class="pdesc mb10">Tạo giọng đọc lồng tiếng theo đúng từng mốc thời gian phụ đề. Chọn giọng như trong pipeline video gen. Nếu video có âm gốc, có thể tắt để chỉ nghe giọng lồng tiếng.</div>
+      <div class="field mb12">
+        <label>Giọng đọc lồng tiếng</label>
+        <select id="dub-voice">
+          <option value="">Không lồng tiếng</option>
+          <option value="auto">Tự động (Tiếng Việt — giọng nữ)</option>
+          <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
+          <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
+          <option value="en-US-AriaNeural">Aria (Nữ)</option>
+          <option value="en-US-GuyNeural">Guy (Nam)</option>
+        </select>
+      </div>
+      <div class="field mb12">
+        <label>Cảm xúc giọng đọc</label>
+        <select id="dub-emotion">
+          <option value="">Mặc định (bình thường)</option>
+          <option value="binh than">Tự nhiên — chậm hơn 5% (như người thật đọc)</option>
+          <option value="vui ve">Vui tươi, rộn ràng</option>
+          <option value="phan khich">Hào hứng</option>
+          <option value="tu tin">Tự tin / Dứt khoát</option>
+          <option value="nghiem tuc">Nghiêm túc / Trịnh trọng</option>
+          <option value="ngot ngao">Ấm áp / Ngọt ngào</option>
+          <option value="thong thai">Kể chuyện / Thông thái</option>
+          <option value="buon ba">Buồn / Cảm động</option>
+          <option value="thi tham">Thì thầm</option>
+        </select>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="chk-keep-origin-audio" style="width:auto">
+        <span>Giữ âm gốc của video</span>
+      </label>
+      <div class="field mt8" id="orig-vol-wrap" style="display:none">
+        <label>Âm lượng âm gốc: <b id="orig-vol-val">50%</b></label>
+        <input type="range" id="orig-vol" min="0" max="100" value="50" step="5">
+      </div>
+    </div>
+
+    <!-- NÚT XUẤT VIDEO -->
+    <div class="card mb16">
+      <div class="row gap-8">
+        <button class="btn btn-p" id="btn-export-sub" style="padding:10px 22px;font-size:14px">🎬 Xuất Video Đã Vietsub & Xử lý</button>
+      </div>
+      <div id="sub-export-result" class="mt16"></div>
+    </div>
+
+    <!-- HƯỚNG DẪN (cuối trang) -->
+    <div class="card">
+      <h3>📖 Hướng dẫn xem thử & chỉnh sửa</h3>
+      <div class="g2" style="align-items:start">
+        <ul style="padding-left:18px;font-size:12.5px;line-height:1.8;color:var(--tx2)">
+          <li>Phụ đề chạy đúng theo mốc thời gian trong ô SRT — bấm <b>▶ Play</b> để xem thử như sản phẩm thật.</li>
+          <li>Bấm vào <b>dòng chữ phụ đề trên video</b> và gõ trực tiếp để sửa câu — ô SRT tự cập nhật.</li>
+          <li>Đổi <b>vị trí</b> bằng cách kéo phụ đề lên/xuống hoặc dùng danh sách; đổi <b>cỡ chữ</b> bằng cách kéo tay nắm vàng ở góc chữ.</li>
+        </ul>
+        <ul style="padding-left:18px;font-size:12.5px;line-height:1.8;color:var(--tx2)">
+          <li>Chọn <b>Song ngữ</b> để hiện 2 dòng: bản gốc phía trên + bản dịch phía dưới (lồng tiếng đọc bản dịch ở dòng cuối).</li>
+          <li>Tick <b>Bật bộ lọc làm mờ</b> (khối 4) để thấy đúng vùng sẽ bị làm mờ trên video.</li>
+          <li>Sửa xong thấy hài lòng → bấm <b>🎬 Xuất Video Đã Vietsub</b> phía trên.</li>
+        </ul>
+      </div>
+    </div>`;
+
+  let selectedSourceUrl=lastWorkingVideoUrl;
+
+  const updateSourcePreview=(url)=>{
+    if(!url){$('#sub-source-player').innerHTML='';return}
+    selectedSourceUrl=url;
+    $('#sub-source-player').innerHTML=`
+      <div class="card-sm row gap-12" style="background:var(--bg2)">
+        <video controls src="${esc(url)}" style="max-height:180px;border-radius:var(--radius-sm);background:#000"></video>
+        <div>
+          <div class="bold mb4">Video nguồn đã sẵn sàng</div>
+          <div class="xs mu mb8">${esc(url)}</div>
+          <span class="badge b-ok">✅ Đã nạp video</span>
+        </div>
+      </div>`;
+    document.dispatchEvent(new CustomEvent('sub-source-changed', {detail: url}));
+  };
+
+  if(selectedSourceUrl)updateSourcePreview(selectedSourceUrl);
+
+  // File upload from computer
+  attachDrop('sub-file');
+  $('#sub-file').onchange=async()=>{
+    const f=$('#sub-file').files[0];
+    if(!f)return;
+    try{
+      $('#sub-file-info').innerHTML='<div class="spin"></div> Đang upload video...';
+      const u=await upload(f);
+      $('#sub-url-input').value=u;
+      $('#sub-file-info').innerHTML='<span class="ok">✅ Đã tải lên file thành công</span>';
+      updateSourcePreview(u);
+    }catch(e){ter(e.message);$('#sub-file-info').innerHTML='<span class="er">Lỗi tải lên</span>'}
+  };
+
+  $('#sub-url-input').onchange=()=>{
+    updateSourcePreview($('#sub-url-input').value.trim());
+  };
+
+  const loadDubVoices=async()=>{
+    const sel=$('#dub-voice');
+    if(!sel) return;
+    try{
+      const res=await api('/api/assistant/voices-cloned');
+      const cloned=(res.voices||[]).filter(v=>v.voice_value);
+      if(cloned.length){
+        let grp=sel.querySelector('optgroup[label*="Giọng clone"]');
+        if(!grp){grp=document.createElement('optgroup');grp.label='🎤 Giọng clone của bạn';sel.appendChild(grp);}
+        cloned.forEach(v=>{
+          const o=document.createElement('option');
+          o.value=v.voice_value; o.textContent='🎤 '+v.name+' (giọng đã nhân bản)'; o.setAttribute('data-clone','1');
+          grp.appendChild(o);
+        });
+      }
+    }catch{}
+  };
+  loadDubVoices();
+
+  // Đổi chế độ phụ đề: song ngữ / gốc / bản dịch — swap textarea, giữ nguyên cue
+  $('#sub-mode').onchange=()=>{
+    if (!window._srtVariants) return;
+    const mode = $('#sub-mode').value;
+    const text = mode === 'original' ? window._srtVariants.original
+               : mode === 'translated' ? (window._srtVariants.translated || window._srtVariants.original)
+               : window._srtVariants.bilingual;
+    $('#sub-srt-box').value = text;
+    $('#sub-srt-box').dispatchEvent(new Event('input', {bubbles: true}));
+  };
+
+  // Transcribe & Translate
+  $('#btn-trans-start').onclick=async()=>{
+    const targetUrl=selectedSourceUrl||$('#sub-url-input').value.trim();
+    if(!targetUrl){ter('Vui lòng chọn hoặc nhập video nguồn trước');return}
+    const btn=$('#btn-trans-start');
+    let elapsedT=null, elapsedSec=0;
+    const elapsedEl=$('#trans-elapsed');
+    const fmtElapsed=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+    try{
+      btn.disabled=true;btn.innerHTML='<div class="spin"></div> Đang nhận diện giọng nói & dịch...';
+      $('#trans-status').innerHTML='<div class="spin"></div> Đang xử lý video và tạo phụ đề...';
+      elapsedSec=0;
+      if(elapsedEl){elapsedEl.textContent='⏳ Đang xử lý… '+fmtElapsed(0); elapsedT=setInterval(()=>{elapsedSec++;elapsedEl.textContent='⏳ Đang xử lý… '+fmtElapsed(elapsedSec);},1000);}
+      const targetLang=$('#sub-lang').value;
+      const quality=($('#sub-quality')||{}).value||'accurate';
+      const useLlm=($('#sub-use-llm')||{}).checked!==false;
+      const r=await post('/api/video/transcribe',{
+        video_url:targetUrl,
+        target_lang:targetLang,
+        quality:quality,
+        use_llm:useLlm
+      });
+      // Lưu các biến thể SRT để đổi chế độ không cần gọi lại server
+      window._srtVariants = { original: r.srt_original || r.srt, translated: r.srt_translated || '', bilingual: r.srt_bilingual || r.srt_original || r.srt };
+      const modeSel = $('#sub-mode');
+      if (modeSel) {
+        const mode = r.subtitle_mode || 'bilingual';
+        // Giao diện luôn default sang song ngữ nếu có dịch; nếu chưa dịch -> song ngữ = gốc
+        if (r.translate_status === 'ok' || r.translate_status === 'ok_google' || r.translate_status === 'ok_llm') modeSel.value = 'bilingual';
+        else if (mode === 'original' || mode === 'translated') modeSel.value = mode;
+        else modeSel.value = 'bilingual';
+        const note = $('#sub-mode-note');
+        if (note) {
+          note.textContent = (r.translate_status === 'ok' || r.translate_status === 'ok_google' || r.translate_status === 'ok_llm')
+            ? 'Cả 2 dòng: bản gốc phía trên + bản dịch phía dưới.'
+            : 'Chưa dịch được — phụ đề tạm giữ nguyên ngôn ngữ gốc; lồng tiếng vẫn dùng được.';
+        }
+      }
+      const warn = $('#sub-audio-warning');
+      if (warn) { warn.style.display = r.audio_warning ? 'block' : 'none'; warn.textContent = r.audio_warning || ''; }
+      $('#sub-srt-box').value=r.srt;
+      $('#sub-srt-box').dispatchEvent(new Event('input', {bubbles: true}));
+      // Các trạng thái dịch ok_google (miễn phí, không cần credits) gọi chung là ok
+      const isOk = r.translate_status==='ok'||r.translate_status==='ok_google'||r.translate_status==='ok_llm';
+      const transMsg = isOk ? ' · Đã dịch sang <b>'+esc((r.available_target_langs.find(l=>l.code===r.target_lang)||{}).name||r.target_lang)+'</b>'
+        : r.translate_status==='same_language' ? ' · Ngôn ngữ gốc trùng đích (không cần dịch)'
+        : r.translate_status==='failed'||r.translate_status==='missing_key' ? ' · <span class="er">Chưa thể dịch — phụ đề giữ nguyên ngôn ngữ gốc</span>'
+        : r.translate_status && (r.translate_status.startsWith('unsupported_pair')) ? ' · <span class="er">Cặp ngôn ngữ này chưa có model dịch — phụ đề giữ nguyên</span>' : '';
+      const extra=[];
+      if(r.asr_recovered_cues) extra.push('đã vá <b>'+r.asr_recovered_cues+'</b> đoạn thoại bị bỏ sót');
+      if(r.llm_used) extra.push('AI: <b>'+esc(r.llm_model||'LLM')+'</b>');
+      $('#trans-status').innerHTML=`<span class="ok bold">✅ Hoàn thành! · Ngôn ngữ gốc: <b>${esc(r.language)}</b> · Đã nhận dạng <b>${r.segments.length} câu</b>${extra.length?' · '+extra.join(' · '):''}${transMsg}</span>`;
+      tok('Đã tạo phụ đề thành công!');
+    }catch(e){
+      ter(e.message);
+      $('#trans-status').innerHTML=`<span class="er">❌ Lỗi: ${esc(e.message)}</span>`;
+    }finally{if(elapsedT)clearInterval(elapsedT);if(elapsedEl)elapsedEl.textContent='';btn.disabled=false;btn.innerHTML='🎙️ Bắt đầu Phiên âm & Dịch'}
+  };
+
+  // ---------- Preview với phụ đề (WYSIWYG, sửa trực tiếp trên video) ----------
+  const pvVideo = $('#sub-preview-video');
+  const pvOverlay = $('#sub-preview-overlay');
+  const pvBlur = $('#sub-preview-blur');
+  const pvInfo = $('#sub-preview-info');
+  const fmtSrtClient = s => {
+    const ms = Math.round((s % 1) * 1000), sec = Math.floor(s) % 60, min = Math.floor(s / 60) % 60, h = Math.floor(s / 3600);
+    return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+  };
+  const parseSrt = text => {
+    const out = [];
+    String(text || '').trim().split(/\n\s*\n/).forEach(block => {
+      const lines = block.split('\n').map(l => l.trimEnd()).filter(l => l.trim());
+      if (lines.length < 3) return;
+      const m = lines[1].match(/(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)/);
+      if (!m) return;
+      const g = m.slice(1).map(Number);
+      out.push({ start: g[0]*3600+g[1]*60+g[2]+g[3]/1000, end: g[4]*3600+g[5]*60+g[6]+g[7]/1000, text: lines.slice(2).join(' ').trim() });
+    });
+    return out;
+  };
+  const srtFromCues = cues => cues.map((c, i) => `${i+1}\n${fmtSrtClient(c.start)} --> ${fmtSrtClient(c.end)}\n${c.text}\n`).join('\n');
+  const pvState = { cues: [], active: -1, editing: false };
+  const pvSyncBlurInputs = () => {
+    if(!pvVideo.videoWidth||!pvVideo.videoHeight)return;
+    const rect=pvVideo.parentElement.getBoundingClientRect(), videoRect=pvVideo.getBoundingClientRect(), scaleX=pvVideo.videoWidth/videoRect.width, scaleY=pvVideo.videoHeight/videoRect.height;
+    const br=pvBlur.getBoundingClientRect();
+    $('#sub-bx').value=Math.max(0,Math.round((br.left-videoRect.left)*scaleX));
+    $('#sub-by').value=Math.max(0,Math.round((br.top-videoRect.top)*scaleY));
+    $('#sub-bw').value=Math.max(1,Math.round(br.width*scaleX));
+    $('#sub-bh').value=Math.max(1,Math.round(br.height*scaleY));
+  };
+  let pvDrag=null,pvFontDrag=null;
+  const pvPointerDown=(e,resize)=>{
+    if(!$('#chk-blur-sub').checked||!pvVideo.videoWidth)return;
+    e.preventDefault();e.stopPropagation();
+    const rect=pvVideo.parentElement.getBoundingClientRect(), blurRect=pvBlur.getBoundingClientRect();
+    pvDrag={resize,startX:e.clientX,startY:e.clientY,left:blurRect.left-rect.left,top:blurRect.top-rect.top,width:blurRect.width,height:blurRect.height,rect};
+    pvBlur.setPointerCapture?.(e.pointerId);
+  };
+  pvBlur.addEventListener('pointerdown',e=>pvPointerDown(e,e.target.id==='sub-blur-handle'));
+  pvBlur.addEventListener('pointermove',e=>{
+    if(!pvDrag)return;
+    const sx=e.clientX-pvDrag.startX,sy=e.clientY-pvDrag.startY;
+    const left=Math.max(0,Math.min(pvDrag.rect.width-12,pvDrag.left+(pvDrag.resize?0:sx)));
+    const top=Math.max(0,Math.min(pvDrag.rect.height-12,pvDrag.top+(pvDrag.resize?0:sy)));
+    pvBlur.style.left=left+'px';pvBlur.style.top=top+'px';
+    if(pvDrag.resize){pvBlur.style.width=Math.max(12,Math.min(pvDrag.rect.width-left,pvDrag.width+sx))+'px';pvBlur.style.height=Math.max(12,Math.min(pvDrag.rect.height-top,pvDrag.height+sy))+'px';}
+    pvSyncBlurInputs();
+  });
+  ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>pvBlur.addEventListener(ev,()=>{pvDrag=null;}));
+  const pvSizeHandle=document.getElementById('sub-size-handle');
+  pvSizeHandle?.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();pvFontDrag={y:e.clientY,size:+$('#sub-v-size').value};pvSizeHandle.setPointerCapture?.(e.pointerId);});
+  pvSizeHandle?.addEventListener('pointermove',e=>{
+    if(!pvFontDrag)return;
+    const change=Math.round((pvFontDrag.y-e.clientY)/3),next=Math.max(8,Math.min(72,pvFontDrag.size+change));
+    $('#sub-v-size').value=String(next);pvApplyOverlayStyle();
+  });
+  ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>pvSizeHandle?.addEventListener(ev,()=>{pvFontDrag=null;}));
+  const pvMoveHandle=document.getElementById('sub-move-handle');
+  pvMoveHandle?.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();pvOverlay.setPointerCapture?.(e.pointerId);pvOverlay.dataset.dragY=String(e.clientY);});
+  pvOverlay.addEventListener('pointerdown',e=>{
+    if(e.target===pvSizeHandle||e.target.closest('#sub-size-handle')||e.target===pvMoveHandle)return;
+    if(e.target===pvOverlay && e.offsetY<22)return;
+    pvOverlay.setPointerCapture?.(e.pointerId);
+    pvOverlay.dataset.dragY=String(e.clientY);
+  });
+    pvOverlay.addEventListener('pointermove',e=>{
+    if(!pvOverlay.hasPointerCapture?.(e.pointerId)||!pvOverlay.dataset.dragY)return;
+    const wrap=pvVideo.getBoundingClientRect(), parent=pvVideo.parentElement.getBoundingClientRect();
+    const pct=Math.max(3,Math.min(85,(e.clientY-wrap.top)/wrap.height*100));
+    pvOverlay.style.top=(wrap.top-parent.top+pct/100*wrap.height)+'px';pvOverlay.style.bottom='auto';
+    const mode=pct<28?'top':pct>68?'bottom':'middle';$('#sub-v-pos').value=mode;
+  });
+  ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>pvOverlay.addEventListener(ev,()=>{delete pvOverlay.dataset.dragY;}));
+  const pvScale = () => (pvVideo.videoWidth ? pvVideo.clientWidth / pvVideo.videoWidth : 1);
+  const pvApplyOverlayStyle = () => {
+    if (!pvVideo.videoWidth) return;
+    const wrapRect=pvVideo.parentElement.getBoundingClientRect(), videoRect=pvVideo.getBoundingClientRect();
+    const sx=pvVideo.videoWidth/videoRect.width, sy=pvVideo.videoHeight/videoRect.height;
+    const pos = $('#sub-v-pos').value;
+    const sc = pvScale();
+    pvOverlay.style.fontSize = Math.max(9, +$('#sub-v-size').value * sc) + 'px';
+    const sizeLabel=$('#sub-v-size-label');if(sizeLabel)sizeLabel.textContent=$('#sub-v-size').value+'px';
+    const sizeHandle=document.getElementById('sub-size-handle');if(sizeHandle)sizeHandle.style.display='block';
+    if (pos === 'top') { pvOverlay.style.top = '6%'; pvOverlay.style.bottom = 'auto'; }
+    else if (pos === 'middle') { pvOverlay.style.top = '42%'; pvOverlay.style.bottom = 'auto'; }
+    else { pvOverlay.style.top = 'auto'; pvOverlay.style.bottom = '6%'; }
+    const blurOn = $('#chk-blur-sub').checked;
+    pvBlur.style.display = blurOn ? 'block' : 'none';
+    if (blurOn) {
+      pvBlur.style.left = (videoRect.left-wrapRect.left + +$('#sub-bx').value/sx) + 'px';
+      pvBlur.style.top = (videoRect.top-wrapRect.top + +$('#sub-by').value/sy) + 'px';
+      pvBlur.style.width = (+$('#sub-bw').value/sx) + 'px';
+      pvBlur.style.height = (+$('#sub-bh').value/sy) + 'px';
+    }
+  };
+  const pvSyncCue = () => {
+    const t = pvVideo.currentTime;
+    const idx = pvState.cues.findIndex(c => t >= c.start && t < c.end);
+    pvState.active = idx;
+    pvVideo.dataset.cue = idx;
+    if (idx >= 0) {
+      pvOverlay.style.display = 'flex';
+      if (!pvState.editing) {
+        const textNode=Array.from(pvOverlay.childNodes).find(n=>n.nodeType===Node.TEXT_NODE);
+        if(textNode)textNode.nodeValue=pvState.cues[idx].text;
+        else pvOverlay.insertBefore(document.createTextNode(pvState.cues[idx].text),pvOverlay.firstChild);
+      }
+      pvInfo.textContent = `Phụ đề #${idx + 1}/${pvState.cues.length} · ${fmtSrtClient(pvState.cues[idx].start)} → ${fmtSrtClient(pvState.cues[idx].end)}`;
+    } else {
+      pvOverlay.style.display = 'none';
+      pvInfo.textContent = `Không có phụ đề tại ${fmtSrtClient(t)}`;
+    }
+  };
+  const pvLoadSrt = () => { pvState.cues = parseSrt($('#sub-srt-box').value); pvState.active = -1; pvSyncCue(); };
+  pvVideo.addEventListener('timeupdate', pvSyncCue);
+  pvVideo.addEventListener('loadedmetadata', pvApplyOverlayStyle);
+  pvVideo.addEventListener('seeked', pvSyncCue);
+  ['input', 'focus', 'blur'].forEach(ev => pvOverlay.addEventListener(ev, () => {
+    pvState.editing = ev !== 'blur';
+    const idx = +pvVideo.dataset.cue;
+    if (idx >= 0 && pvState.cues[idx]) {
+      const clean=pvOverlay.cloneNode(true);
+      clean.querySelectorAll('#sub-move-handle,#sub-size-handle').forEach(n=>n.remove());
+      pvState.cues[idx].text = clean.textContent;
+      $('#sub-srt-box').value = srtFromCues(pvState.cues);
+    }
+  }));
+  pvOverlay.addEventListener('paste', e => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData || window.clipboardData).getData('text')); });
+  let pvDebounce;
+  $('#sub-srt-box').addEventListener('input', () => { clearTimeout(pvDebounce); pvDebounce = setTimeout(pvLoadSrt, 250); });
+  ['change', 'input'].forEach(ev => {
+    ['#sub-v-pos', '#sub-v-size'].forEach(sel => ($(sel) || {}).addEventListener?.(ev, pvApplyOverlayStyle));
+    ['#chk-blur-sub', '#sub-bx', '#sub-by', '#sub-bw', '#sub-bh'].forEach(sel => ($(sel) || {}).addEventListener?.(ev, pvApplyOverlayStyle));
+  });
+  window.addEventListener('resize', pvApplyOverlayStyle);
+  const pvLoadVideo = url => {
+    url = (url || '').trim();
+    if (!url) return;
+    pvVideo.src = url;
+    pvVideo.load();
+    pvApplyOverlayStyle();
+    pvLoadSrt();
+  };
+  $('#btn-sub-preview-reload').onclick = () => pvLoadVideo(selectedSourceUrl || $('#sub-url-input').value.trim());
+  document.addEventListener('sub-source-changed', e => pvLoadVideo(e.detail));
+  // nạp sẵn nguồn hiện tại
+  if (selectedSourceUrl || $('#sub-url-input').value.trim()) pvLoadVideo(selectedSourceUrl || $('#sub-url-input').value.trim());
+
+  $('#chk-keep-origin-audio').onchange=()=>{$('#orig-vol-wrap').style.display=$('#chk-keep-origin-audio').checked?'block':'none'};
+  $('#orig-vol').oninput=()=>{$('#orig-vol-val').textContent=$('#orig-vol').value+'%'};
+
+  $('#chk-blur-sub').onchange=()=>{
+    $('#blur-box-inputs').classList.toggle('hide',!$('#chk-blur-sub').checked);
+    pvApplyOverlayStyle();
+  };
+
+  // Export video
+  $('#btn-export-sub').onclick=async()=>{
+    const targetUrl=selectedSourceUrl||$('#sub-url-input').value.trim();
+    if(!targetUrl){ter('Chưa có video nguồn');return}
+    const btn=$('#btn-export-sub');
+    try{
+      btn.disabled=true;btn.innerHTML='<div class="spin"></div> Đang ghép phụ đề & xử lý video...';
+      const srt=$('#sub-srt-box').value.trim();
+      let blurRegion=null;
+      if($('#chk-blur-sub').checked){
+        blurRegion={
+          x:+$('#sub-bx').value,
+          y:+$('#sub-by').value,
+          width:+$('#sub-bw').value,
+          height:+$('#sub-bh').value
+        };
+      }
+      const r=await post('/api/video/process',{
+        video_url:targetUrl,
+        srt_content:srt,
+        sub_position:$('#sub-v-pos').value,
+        sub_font_size:+$('#sub-v-size').value,
+        blur_region:blurRegion,
+        tts_voice:($('#dub-voice')||{}).value||'',
+        keep_original_audio:($('#chk-keep-origin-audio')||{}).checked||false,
+        src_volume:($('#chk-keep-origin-audio')||{}).checked ? (+$('#orig-vol').value/100) : 0,
+        tts_emotion:($('#dub-emotion')||{}).value||''
+      });
+
+      $('#sub-export-result').innerHTML=`
+        <div class="card su" style="border-color:rgba(34,211,160,0.35);background:var(--card)">
+          <div class="row mb12"><span class="badge b-ok">✅ Video hoàn thiện xuất bản!</span>${r.dubbed?' <span class="badge b-ok">🔊 Đã lồng tiếng TTS</span>':''}</div>
+          <video controls src="${esc(r.output_video_url)}" style="width:100%;max-height:420px;border-radius:var(--radius-sm);background:#000;display:block;margin-bottom:12px"></video>
+          <div class="row gap-8">
+            <a href="${esc(r.output_video_url)}" download class="btn btn-p">⬇ Tải video hoàn chỉnh về máy</a>
+            <a href="${esc(r.output_video_url)}" target="_blank" class="btn">↗ Mở tab xem đầy màn hình</a>
+          </div>
+        </div>`;
+      tok('Đã xuất video vietsub thành công!');
+      $('#sub-export-result').scrollIntoView({behavior:'smooth'});
+    }catch(e){ter(e.message)}
+    finally{btn.disabled=false;btn.innerHTML='🎬 Xuất Video Đã Vietsub & Xử lý'}
+  };
+}
+
+/* ─────────── 5. NHẬT KÝ TÀI KHOẢN (ACTIVITY LOG - YÊU CẦU 2) ─────────── */
+async function pgActivity(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const logs=await api('/api/auth/me/activity');
+    const actLabel=a=>{
+      const map={
+        login:'🔑 Đăng nhập',
+        register:'✨ Đăng ký tài khoản',
+        generate_video:'🎬 Tạo video template',
+        assistant_video_generate:'🤖 Trợ lý AI tạo video',
+        topup_created:'💎 Tạo lệnh nạp credit',
+        topup_success:'✅ Nạp credit thành công',
+        video_download:'📥 Tải video mạng xã hội',
+        video_transcribe:'🎙️ Dịch thuật / Phụ đề video',
+        video_process:'🎞️ Xuất video vietsub',
+        ai_assistant_analyze:'🧠 Phân tích kịch bản AI',
+        ai_generate_character:'🎨 Tạo ảnh nhân vật AI'
+      };
+      return map[a]||a;
+    };
+
+    pc.innerHTML=`
+      <div class="sec">
+        <div>
+          <div class="ptitle">📋 Nhật ký hoạt động tài khoản</div>
+          <div class="pdesc">Lưu trữ toàn bộ các phiên đăng nhập, tạo video, nạp tiền và tương tác của bạn</div>
+        </div>
+        <button class="btn btn-sm" onclick="pgActivity()">🔄 Làm mới</button>
+      </div>
+
+      <div class="card">
+        ${logs.length?`
+          <div class="tw">
+            <table>
+              <tr>
+                <th>Thời gian</th>
+                <th>Hành động</th>
+                <th>Địa chỉ IP</th>
+                <th>Chi tiết hoạt động</th>
+              </tr>
+              ${logs.map(l=>`
+                <tr>
+                  <td class="xs mu" style="white-space:nowrap">${fmtD(l.created_at)}</td>
+                  <td class="bold">${actLabel(l.action)}</td>
+                  <td class="xs mu">${esc(l.ip||'—')}</td>
+                  <td class="sm">
+                    ${Object.entries(l.details||{}).map(([k,v])=>`<span class="tag mr4" style="margin-right:4px"><b>${esc(k)}:</b> ${esc(typeof v==='object'?JSON.stringify(v):v)}</span>`).join('')||'—'}
+                  </td>
+                </tr>`).join('')}
+            </table>
+          </div>`:
+          `<div class="empty"><div class="empty-ic">📋</div><div class="bold">Chưa có ghi nhận hoạt động</div></div>`}
+      </div>`;
+  }catch(e){pc.innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+/* ─────────── 6. LỊCH SỬ RENDER ─────────── */
+async function pgHist(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const gs=await api('/api/generations');
+    const hasPend=gs.some(g=>g.status==='pending'||g.status==='processing');
+    const sb=s=>{const m={success:'b-ok',failed:'b-er',processing:'b-warn',pending:'b-mu'};const l={success:'✅ Thành công',failed:'❌ Thất bại',processing:'⏳ Xử lý',pending:'⏳ Chờ'};return`<span class="badge ${m[s]||'b-mu'}">${l[s]||s}</span>`};
+    pc.innerHTML=`
+      <div class="sec">
+        <div><div class="ptitle">Lịch sử tạo video</div><div class="pdesc">Tất cả video bạn đã tạo trên hệ thống</div></div>
+        <button class="btn btn-sm" onclick="pgHist()">🔄 Làm mới</button>
+      </div>
+      ${!gs.length?`<div class="empty"><div class="empty-ic">📭</div><div style="font-size:14px;font-weight:600;color:var(--tx2)">Chưa có lịch sử</div><div class="sm mu">Bắt đầu tạo video từ Thư viện</div></div>`
+      :`<div style="display:flex;flex-direction:column;gap:9px">
+        ${gs.map(g=>`<div class="hi">
+          <div class="hi-th">
+            ${g.output_video_url?`<video muted loop preload="metadata" src="${esc(g.output_video_url)}" onmouseenter="this.play()" onmouseleave="this.pause()" style="width:100%;height:100%;object-fit:cover"></video>`:`<span style="font-size:18px;opacity:.3">🎬</span>`}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div class="row gap-6 mb4">${sb(g.status)}<span class="tag">${g.render_type}</span><span class="xs mu">#${g.id}</span></div>
+            <div class="bold sm mb2">${esc(g.title||'Tác phẩm #'+g.id)}</div>
+            <div class="xs mu">${fmtD(g.created_at)} · Danh mục: <b>${esc(g.user_category||'Mặc định')}</b> · 💳 ${g.credits_cost} credit</div>
+            ${g.error_message?`<div class="xs er mt4">${esc(g.error_message.slice(0,100))}</div>`:''}
+          </div>
+          <div class="row gap-5">
+            ${g.output_video_url?`<a href="${esc(g.output_video_url)}" target="_blank" class="btn btn-sm btn-ok">▶ Xem</a><a href="${esc(g.output_video_url)}" download class="btn btn-sm">⬇</a>`:''}
+          </div>
+        </div>`).join('')}
+      </div>`}`;
+    if(hasPend)pollT=setTimeout(pgHist,3000);
+  }catch(e){$('#page').innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+/* ─────────── 7. NẠP CREDIT (VIETQR) ─────────── */
+async function pgTopup(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const [cfg, txs, adj, ledger] = await Promise.all([api('/api/billing/config'), api('/api/billing/transactions'), api('/api/billing/adjustments'), api('/api/auth/me/credit-ledger').catch(()=>[])]);
+    const cr=n=>+(n/cfg.vnd_per_credit).toFixed(2);
+    pc.innerHTML=`
+      <div class="ptitle mb4">Nạp Credit</div>
+      <div class="pdesc mb20">VietQR · Tự động cộng · Hiệu lực ${Math.round(cfg.ttl_seconds/60)} phút</div>
+      ${cfg.promotions.map(p=>`<div class="card mb12" style="border-color:rgba(34,211,160,.3);background:var(--ok2)">
+        🎉 <b>${esc(p.name)}</b>: ${p.tiers.map(t=>`từ <b>${fmtV(t.min_vnd)}</b> thưởng <b class="ok">+${t.bonus_percent}%</b>`).join(' · ')}
+        ${p.ends_at?`<span class="xs mu"> (đến ${fmtD(p.ends_at)})</span>`:''}
+      </div>`).join('')}
+      <div class="g2" style="gap:18px;align-items:start">
+        <div class="card">
+          <h3>Tạo mã QR</h3>
+          <div class="field"><label>Số tiền (tối thiểu ${fmtV(cfg.min_vnd)})</label>
+            <input id="amt" type="number" min="${cfg.min_vnd}" max="${cfg.max_vnd}" step="1000" value="${Math.max(cfg.min_vnd,50000)}">
+          </div>
+          <div class="qa mb12">
+            ${cfg.quick_amounts.map(q=>`<button class="qa-btn" data-q="${q.amount_vnd}">${fmtV(q.amount_vnd)}${q.bonus_percent>0?` <span class="ok xs">+${q.bonus_percent}%</span>`:''}</button>`).join('')}
+          </div>
+          <div class="card-sm mb12" style="background:var(--bg3)"><div id="conv" class="sm"></div></div>
+          <button class="btn btn-p" id="qr-go" style="width:100%;justify-content:center;padding:10px">Tạo mã VietQR</button>
+          <div id="qr-box" class="mt16"></div>
+          <div class="xs mu mt8">Sau 5 phút chưa thanh toán, lệnh nạp sẽ tự chuyển sang trạng thái <b>failed</b> và không được cộng credit; muốn nạp lại hãy bấm nút tạo mã mới.</div>
+        </div>
+        <div>
+          <div class="card mb16">
+            <h3>Giao dịch gần đây</h3>
+            <div class="tw"><table>
+              <tr><th>Mã</th><th>Số tiền</th><th>Credit</th><th>Trạng thái</th></tr>
+              ${txs.slice(0,6).map(t=>`<tr>
+                <td class="xs mu">${t.transaction_code}</td>
+                <td>${fmtV(t.amount_vnd)}</td>
+                <td class="ok bold">+${t.credits_added}${t.bonus_credits>0?` <span class="xs mu">(+${t.bonus_credits}🎁)</span>`:''}</td>
+                <td><span class="badge ${t.status==='success'?'b-ok':t.status==='pending'?'b-warn':'b-er'}">${t.status}</span></td>
+              </tr>`).join('')||`<tr><td class="mu" colspan="4">Chưa có giao dịch</td></tr>`}
+            </table></div>
+          </div>
+          ${adj.length?`<div class="card">
+            <h3>Admin điều chỉnh</h3>
+            <div class="tw"><table>
+              <tr><th>Thời gian</th><th>Số lượng</th><th>Sau</th><th>Lý do</th></tr>
+              ${adj.map(a=>`<tr><td class="xs mu">${fmtD(a.created_at)}</td><td class="${a.amount>0?'ok':'er'} bold">${a.amount>0?'+':''}${a.amount}</td><td>${a.balance_after}</td><td class="xs mu">${esc(a.reason||'—')}</td></tr>`).join('')}
+            </table></div>
+          </div>`:''}
+        </div>
+      </div>
+      <div class="card mt16">
+        <h3>💸 Dòng tiền (lịch sử cộng / trừ credit)</h3>
+        <div class="tw"><table>
+          <tr><th>Thời gian</th><th>Loại</th><th>Số tiền</th><th>Số dư sau</th><th>Lý do</th></tr>
+          ${(ledger||[]).slice(0,50).map(l=>`<tr>
+            <td class="xs mu">${fmtD(l.created_at)}</td>
+            <td><span class="badge ${l.amount>0?'b-ok':'b-mu'}">${l.amount>0?'➕ ':'➖ '}${l.kind}</span></td>
+            <td class="${l.amount>0?'ok':'er'} bold">${l.amount>0?'+':''}${l.amount}</td>
+            <td>${l.balance_after}</td>
+            <td class="sm">${esc(l.reason||'—')}</td>
+          </tr>`).join('')||`<tr><td class="mu" colspan="5">Chưa có giao dịch credit</td></tr>`}
+        </table></div>
+      </div>`;
+
+    const upConv=async()=>{
+      const v=+$('#amt').value;if(!v||v<0)return;
+      try{
+        const q=await api('/api/billing/quote?amount_vnd='+v);
+        $('#conv').innerHTML=`Nhận: <b class="ac">${q.total_credits} credit</b>${q.bonus_credits>0?` (<span class="ok">+${q.bonus_credits} thưởng ${q.promo_name}</span>)`:''}`;
+      }catch{const c=cr(v);$('#conv').innerHTML=`Nhận: <b class="ac">${c} credit</b>`}
+    };
+    $('#amt').oninput=upConv;
+    $$('[data-q]').forEach(b=>b.onclick=()=>{$('#amt').value=b.dataset.q;upConv()});
+    upConv();
+
+    let topupCheck=0, topupCountdown=null, topupStatusPoll=null;
+    $('#qr-go').onclick=async()=>{
+      const thisCheck=++topupCheck;
+      clearTimeout(topupCountdown);clearTimeout(topupStatusPoll);
+      try{
+        const r=await post('/api/billing/topup',{amount_vnd:+$('#amt').value});
+        if(thisCheck!==topupCheck)return;
+        let sec=r.seconds_left||cfg.ttl_seconds;
+        const showExpired=()=>{
+          const el=$('#qr-time');if(el)el.innerHTML='<span class="er">Mã đã hết hạn</span>';
+          if($('#qr-recreate')) return;
+          $('#qr-box').insertAdjacentHTML('beforeend','<button class="btn btn-warn btn-sm mt8" id="qr-recreate">🔁 Tạo lại mã</button>');
+          $('#qr-recreate').onclick=()=>$('#qr-go').click();
+        };
+        const tick=()=>{
+          const el=$('#qr-time');if(!el)return;
+          if(sec<=0){showExpired();return;}
+          el.textContent=`Còn ${fmtT(sec)}`;sec--;topupCountdown=setTimeout(tick,1000);
+        };
+        const checkPayment=async()=>{
+          if(!$('#qr-status'))return;
+          try{
+            const state=await api('/api/billing/transactions/'+r.id);
+            if(state.status==='success'){
+              clearTimeout(topupCountdown);clearTimeout(topupStatusPoll);
+              $('#qr-time').innerHTML='<span class="ok">✅ Đã nhận tiền</span>';
+              $('#qr-status').innerHTML='Credit đã được cộng vào tài khoản.';
+              await refreshMe();
+              tok(`Đã nhận ${state.credits_added} credit`);
+              return;
+            }
+            if(state.status==='failed'){
+              clearTimeout(topupCountdown);clearTimeout(topupStatusPoll);
+              showExpired();$('#qr-status').innerHTML='Giao dịch đã hết hạn. Nếu bạn đã chuyển tiền, liên hệ hỗ trợ để được kiểm tra.';
+              return;
+            }
+          }catch{}
+          topupStatusPoll=setTimeout(checkPayment,5000);
+        };
+        $('#qr-box').innerHTML=`<div class="card-sm su" style="text-align:center;background:var(--bg3)">
+          <div class="badge b-warn mb8" id="qr-time"></div>
+          <img src="${esc(r.qr_url)}" style="max-width:240px;width:100%;border-radius:var(--radius-sm);background:#fff;padding:6px;display:block;margin:0 auto 10px">
+          <div class="sm bold mb4">Nội dung chuyển khoản (bắt buộc):</div>
+          <div class="badge b-ac bold lg mb8" style="font-size:15px;letter-spacing:1px">${r.transaction_code}</div>
+          <div class="xs mu" id="qr-status">Đang chờ ngân hàng xác nhận… Tự kiểm tra mỗi 5 giây.</div>
+          <div class="xs mu mt4">Chuyển đúng số tiền và nội dung để hệ thống tự động cộng credit.</div>
+        </div>`;
+        tick();checkPayment();
+      }catch(e){ter(e.message)}
+    };
+  }catch(e){$('#page').innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+/* ─────────── 8. ADMIN PAGES ─────────── */
+async function pgUsers(selId=null){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    pc.innerHTML=`
+      <div class="sec"><div><div class="ptitle">Quản lý Tài khoản</div>
+      <div class="pdesc">Bấm vào một tài khoản để xem &amp; sửa thông tin, tiền, lịch sử hoạt động và sản phẩm của tài khoản đó</div></div></div>
+      <div class="card mb16">
+        <div class="field"><label>Tìm tài khoản</label><input id="uq" placeholder="Tên hoặc email..."></div>
+        <div class="tw mt12" id="ulist"></div>
+      </div>
+      <div id="upanel"></div>
+      <div class="card mt16">
+        <h3>🎤 Giọng clone toàn hệ thống (admin thấy tất cả)</h3>
+        <div class="tw" id="all-voices"></div>
+      </div>`;
+    let sel=selId,timer=null;
+    const loadU=async()=>{
+      const us=await api('/api/admin/users?q='+encodeURIComponent($('#uq')?.value||''));
+      const ul=$('#ulist');if(!ul)return us;
+      ul.innerHTML=us.map(u=>`
+        <div class="card-sm" data-open="${u.id}" style="cursor:pointer;margin-bottom:8px;border:1px solid ${u.id===sel?'var(--gold)':'var(--bd)'}">
+          <div class="row">
+            <div class="u-av" style="width:34px;height:34px;font-size:14px">${esc(u.username[0].toUpperCase())}</div>
+            <div style="flex:1;min-width:0">
+              <div class="row" style="gap:8px"><span class="bold">${esc(u.username)}</span><span class="badge ${u.role==='admin'?'b-ac':'b-mu'}">${esc(u.role)}</span></div>
+              <div class="xs mu">${esc(u.email)} · <span class="ac">${u.credits_balance} credit</span></div>
+            </div>
+            <span class="xs mu">${u.id===sel?'▲':'▼'}</span>
+          </div>
+        </div>`).join('')||'<p class="mu sm">Không có tài khoản</p>';
+      ul.querySelectorAll('[data-open]').forEach(el=>el.onclick=()=>{
+        const id=+el.dataset.open;
+        pgUsers(sel===id?null:id);
+      });
+      return us;
+    };
+    $('#uq').oninput=()=>{clearTimeout(timer);timer=setTimeout(loadU,250)};
+    const us=await loadU();
+    if(sel){
+      const d=await api('/api/admin/users/'+sel+'/detail');
+      const u=d.user;
+      $('#upanel').innerHTML=`
+        <div class="card">
+          <div class="row mb16">
+            <div class="u-av" style="width:40px;height:40px;font-size:16px">${esc(u.username[0].toUpperCase())}</div>
+            <div style="flex:1">
+              <div class="bold" style="font-size:15px">${esc(u.username)}</div>
+              <div class="xs mu">${esc(u.email)} · id ${u.id} · đăng ký ${fmtD(u.created_at)}</div>
+            </div>
+            <span class="badge ${u.role==='admin'?'b-ac':'b-mu'}">${esc(u.role)}</span>
+          </div>
+          <div class="row" style="gap:6px;flex-wrap:wrap" id="ud-tabs">
+            <button class="btn btn-sm btn-p" data-ut="info">✏️ Thông tin</button>
+            <button class="btn btn-sm" data-ut="money">💰 Tiền</button>
+            <button class="btn btn-sm" data-ut="act">📋 Hoạt động</button>
+            <button class="btn btn-sm" data-ut="prod">📦 Sản phẩm</button>
+          </div>
+          <div id="ud-body" class="mt16"></div>
+        </div>`;
+      const body=$('#ud-body');
+      const tabBtns=()=>$$('#ud-tabs [data-ut]');
+      const setTab=(t)=>{
+        tabBtns().forEach(b=>b.classList.toggle('btn-p',b.dataset.ut===t));
+        renderTab(t);
+      };
+      tabBtns().forEach(b=>b.onclick=()=>setTab(b.dataset.ut));
+      function renderTab(t){
+        if(t==='info'){
+          body.innerHTML=`
+            <div class="g2">
+              <div class="field"><label>Tên đăng nhập</label><input id="ud-username" value="${esc(u.username)}"></div>
+              <div class="field"><label>Email</label><input id="ud-email" value="${esc(u.email)}"></div>
+              <div class="field"><label>Vai trò</label><select id="ud-role">
+                <option value="user" ${u.role==='user'?'selected':''}>user</option>
+                <option value="admin" ${u.role==='admin'?'selected':''}>admin</option></select></div>
+              <div class="field"><label>Số điện thoại</label><input value="${esc(u.phone||'— chưa có —')}" disabled></div>
+            </div>
+            <div class="row mt12"><button class="btn btn-p" id="ud-save">💾 Lưu thông tin</button></div>`;
+          $('#ud-save').onclick=async()=>{
+            try{
+              await put('/api/admin/users/'+u.id,{username:$('#ud-username').value.trim(),email:$('#ud-email').value.trim(),role:$('#ud-role').value});
+              tok('Đã cập nhật tài khoản'); pgUsers(u.id);
+            }catch(e){ ter(e.message); }
+          };
+        }else if(t==='money'){
+          body.innerHTML=`
+            <div class="card-sm mb12" style="background:rgba(212,175,55,.1)">Số dư: <b class="ac">${u.credits_balance} credit</b> · đã nạp <b>${_vnd(u.total_paid_vnd)}</b></div>
+            <div class="g2 mb12">
+              <div class="field"><label>Số credit (±)</label><input id="gam" type="number" step="0.01" placeholder="Dương = cộng, âm = trừ"></div>
+              <div class="field"><label>Lý do</label><input id="grs" placeholder="Tặng, hoàn tiền..."></div>
+            </div>
+            <div class="qa mb12">${[10,50,100,500,1000].map(n=>`<button class="qa-btn" data-fill="${n}">+${n}</button>`).join('')}</div>
+            <div class="card-sm mb12 xs mu" id="gprev"></div>
+            <div class="row gap-8 mb16">
+              <button class="btn btn-ok" id="g-add">➕ Cộng</button>
+              <button class="btn btn-er" id="g-sub">➖ Trừ</button>
+            </div>
+            <h3 class="mb8">Lịch sử dòng tiền</h3>
+            <div class="tw"><table>
+              <tr><th>Thời gian</th><th>Loại</th><th>Thay đổi</th><th>Sau</th><th>Lý do</th></tr>
+              ${(d.ledger||[]).map(e=>`<tr>
+                <td class="xs mu">${fmtD(e.created_at)}</td>
+                <td class="xs">${esc(e.kind)}</td>
+                <td class="${e.amount>0?'ok':'er'} bold">${e.amount>0?'+':''}${e.amount}</td>
+                <td>${e.balance_after}</td>
+                <td class="sm">${esc((e.reason||'').slice(0,60))}</td>
+              </tr>`).join('')||'<tr><td class="mu" colspan="5">Chưa có giao dịch</td></tr>'}
+            </table></div>
+            <h3 class="mb8 mt16">Giao dịch nạp tiền</h3>
+            <div class="tw"><table>
+              <tr><th>Mã</th><th>Số tiền</th><th>Credit</th><th>Trạng thái</th><th>Thời gian</th></tr>
+              ${(d.transactions||[]).map(t2=>`<tr>
+                <td class="xs">${esc(t2.transaction_code)}</td>
+                <td>${_vnd(t2.amount_vnd)}</td>
+                <td>${t2.credits_added}</td>
+                <td><span class="badge ${t2.status==='success'?'b-ok':(t2.status==='failed'?'b-er':'b-warn')}">${esc(t2.status)}</span></td>
+                <td class="xs mu">${fmtD(t2.created_at)}</td>
+              </tr>`).join('')||'<tr><td class="mu" colspan="5">Chưa có giao dịch nạp</td></tr>'}
+            </table></div>`;
+          const prev=()=>{const a=parseFloat($('#gam').value);const el=$('#gprev');if(!a||!el)return;
+            el.innerHTML=a>0?`→ <b class="ok">${+(u.credits_balance+a).toFixed(2)} credit</b>`:u.credits_balance+a>=0?`→ <b class="warn">${+(u.credits_balance+a).toFixed(2)} credit</b>`:`<span class="er">Không đủ số dư</span>`;};
+          $('#gam').oninput=prev;
+          $$('[data-fill]').forEach(b=>b.onclick=()=>{$('#gam').value=b.dataset.fill;prev();});
+          const apply=async sign=>{
+            try{
+              const a=parseFloat($('#gam').value);if(!(a>0)){ter('Nhập số lớn hơn 0');return}
+              if(sign<0&&!confirm(`Trừ ${a} credit của ${u.username}?`))return;
+              const r=await post(`/api/admin/users/${u.id}/credits`,{amount:sign*a,reason:$('#grs').value||''});
+              tok(`${sign>0?'Cộng':'Trừ'} ${a} credit — số dư mới: ${r.credits_balance}`);
+              if(u.id===me.id)await refreshMe(); pgUsers(u.id);
+            }catch(e){ter(e.message)}
+          };
+          $('#g-add').onclick=()=>apply(1);$('#g-sub').onclick=()=>apply(-1);
+        }else if(t==='act'){
+          body.innerHTML=`<div class="tw"><table>
+            <tr><th>Thời gian</th><th>Hành động</th><th>IP</th><th>Chi tiết</th></tr>
+            ${(d.activity||[]).map(a=>`<tr>
+              <td class="xs mu">${fmtD(a.created_at)}</td>
+              <td class="sm">${esc(a.action)}</td>
+              <td class="xs mu">${esc(a.ip||'')}</td>
+              <td class="xs mu">${esc(JSON.stringify(a.details||{}).slice(0,120))}</td>
+            </tr>`).join('')||'<tr><td class="mu" colspan="4">Chưa có hoạt động</td></tr>'}
+          </table></div>`;
+        }else{
+          body.innerHTML=`
+            <h3 class="mb8">Sản phẩm đã render (${(d.generations||[]).length})</h3>
+            <div class="tw mb16"><table>
+              <tr><th>#</th><th>Tiêu đề</th><th>Loại</th><th>Trạng thái</th><th>Credit</th><th>Thời gian</th></tr>
+              ${(d.generations||[]).map(g=>`<tr>
+                <td class="xs mu">${g.id}</td>
+                <td class="sm">${esc(g.title||'—')}</td>
+                <td class="xs">${esc(g.render_type)}</td>
+                <td><span class="badge ${g.status==='success'?'b-ok':(g.status==='failed'?'b-er':'b-warn')}">${esc(g.status)}</span></td>
+                <td>${g.credits_cost}</td>
+                <td class="xs mu">${fmtD(g.created_at)}</td>
+              </tr>`).join('')||'<tr><td class="mu" colspan="6">Chưa có sản phẩm</td></tr>'}
+            </table></div>
+            <h3 class="mb8">Template đã tạo (${(d.templates||[]).length})</h3>
+            <div class="tw"><table>
+              <tr><th>#</th><th>Tiêu đề</th><th>Danh mục</th><th>Trạng thái</th><th>Thời gian</th></tr>
+              ${(d.templates||[]).map(t2=>`<tr>
+                <td class="xs mu">${t2.id}</td>
+                <td class="sm">${esc(t2.title||'—')}</td>
+                <td class="xs">${esc(t2.category)}</td>
+                <td><span class="badge ${t2.status==='publish'?'b-ok':'b-mu'}">${esc(t2.status)}</span></td>
+                <td class="xs mu">${fmtD(t2.created_at)}</td>
+              </tr>`).join('')||'<tr><td class="mu" colspan="5">Chưa có template</td></tr>'}
+            </table></div>`;
+        }
+      }
+      setTab('info');
+    }
+    loadAllVoices().catch(()=>{});
+  }catch(e){$('#page').innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+async function loadAllVoices(){
+  const box=$('#all-voices');
+  if(!box) return;
+  try{
+    const res=await api('/api/admin/voices-cloned');
+    const list=res.voices||[];
+    if(!list.length){ box.innerHTML='<p class="mu sm">Chưa có giọng clone nào trong hệ thống.</p>'; return; }
+    box.innerHTML=`<table>
+      <tr><th>#</th><th>Tên</th><th>Chủ sở hữu</th><th>Engine</th><th>Trạng thái</th><th></th></tr>
+      ${list.map(v=>`<tr>
+        <td class="xs mu">${esc(String(v.id).slice(0,8))}</td>
+        <td class="sm bold">${esc(v.name)}</td>
+        <td class="xs mu">${esc(v.owner_username||('#'+(v.owner_id||'?')))}</td>
+        <td class="xs">${v.provider==='elevenlabs'?'Đã nhân bản':'Chỉ lưu mẫu'}</td>
+        <td>${v.clone_error?'<span class="badge b-warn">clone lỗi</span>':'<span class="badge b-ok">hoạt động</span>'}</td>
+        <td><div class="row gap-6" style="align-items:center">
+          ${v.url?`<button class="btn btn-sm" data-play="${esc(v.url)}" title="Nghe mẫu">▶</button>`:''}
+          <button class="btn btn-er btn-sm" data-adel="${esc(v.id)}" title="Xoá giọng">🗑</button>
+        </div></td>
+      </tr>`).join('')}
+    </table>`;
+    box.querySelectorAll('[data-play]').forEach(b=>b.onclick=()=>{ new Audio(b.dataset.play).play().catch(()=>{}); });
+    box.querySelectorAll('[data-adel]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('Xoá giọng clone này khỏi toàn hệ thống?')) return;
+      del('/api/admin/voices-cloned/'+b.dataset.adel).then(()=>{ tok('Đã xoá giọng'); loadAllVoices(); }).catch(e=>ter(e.message));
+    });
+  }catch(e){ box.innerHTML='<p class="er">'+esc(e.message)+'</p>'; }
+}
+
+async function pgAdm(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const ts=await api('/api/admin/templates');
+    const sup=await api('/api/admin/support');
+    pc.innerHTML=`
+      <div class="sec"><div><div class="ptitle">Quản trị Templates</div><div class="pdesc">Duyệt hoặc ẩn template trên toàn hệ thống</div></div></div>
+      <div class="card">
+        <div class="tw"><table>
+          <tr><th>ID</th><th>Tiêu đề</th><th>Loại</th><th>Trạng thái</th><th>Lượt dùng</th><th>Hành động</th></tr>
+          ${ts.map(t=>`<tr>
+            <td class="xs mu">#${t.id}</td>
+            <td class="bold sm">${esc(t.title)}</td>
+            <td><span class="badge b-mu">${esc(t.category)}</span></td>
+            <td><span class="badge ${t.status==='publish'?'b-ok':'b-warn'}">${t.status==='publish'?'Đã duyệt':'Chờ duyệt'}</span></td>
+            <td>${t.usage_count}</td>
+            <td>
+              <button class="btn btn-sm ${t.status==='publish'?'btn-warn':'btn-ok'}" data-pub="${t.id}" data-st="${t.status==='publish'?'private':'publish'}">
+                ${t.status==='publish'?'Ẩn':'Duyệt'}
+              </button>
+            </td>
+          </tr>`).join('')}
+        </table></div>
+      </div>
+      <div class="card mt16">
+        <h3 style="margin:0 0 10px">Liên hệ hỗ trợ (nút trên giao diện)</h3>
+        <div class="xs mu mb12">Nút Zalo/Facebook/Telegram hiện trong sidebar (cạnh tên &amp; credit). Để trống = ẩn nút.</div>
+        <div class="g2">
+          <div class="field mb12"><label>Link Zalo (vd https://zalo.me/0901234567)</label><input id="sup-in-zalo" value="${esc(sup.zalo||'')}" placeholder="https://zalo.me/..."></div>
+          <div class="field mb12"><label>Link Facebook</label><input id="sup-in-fb" value="${esc(sup.facebook||'')}" placeholder="https://www.facebook.com/..."></div>
+          <div class="field mb12"><label>Link Telegram</label><input id="sup-in-tg" value="${esc(sup.telegram||'')}" placeholder="https://t.me/..."></div>
+          <div class="field mb12"><label>Email hỗ trợ</label><input id="sup-in-email" value="${esc(sup.email||'')}" placeholder="support@..."></div>
+        </div>
+        <button class="btn btn-ok" id="btn-sup-save">💾 Lưu liên hệ hỗ trợ</button>
+      </div>`;
+    $$('[data-pub]').forEach(b=>b.onclick=async()=>{
+      try{
+        await patch(`/api/admin/templates/${b.dataset.pub}`,{status:b.dataset.st});
+        tok('Đã cập nhật trạng thái');pgAdm();
+      }catch(e){ter(e.message)}
+    });
+    const bSave=$('#btn-sup-save');
+    if(bSave) bSave.onclick=async()=>{
+      try{
+        await put('/api/admin/support',{
+          zalo:$('#sup-in-zalo').value.trim(),
+          facebook:$('#sup-in-fb').value.trim(),
+          telegram:$('#sup-in-tg').value.trim(),
+          email:$('#sup-in-email').value.trim(),
+        });
+        tok('Đã lưu liên hệ hỗ trợ');initSupport();
+      }catch(e){ter(e.message)}
+    };
+  }catch(e){pc.innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+// Tính "giá gốc API" + "hoà vốn" cho model admin từ dữ liệu /api/admin/provider-costs
+function pcInfo(pc, m, vnpc){
+  if(!pc) return {html:'<span class="xs mu">—</span>', be:'—'};
+  if(pc.error) return {html:'<span class="xs er" title="'+esc(pc.error)+'">⚠ '+esc(String(pc.error).slice(0,40))+'</span>', be:'—'};
+  const step=(m.step||'');
+  const tool=Number(m.price||0);
+  const toolVal=tool*vnpc;
+  if(pc.pricing_mode==='token'){
+    return {html:'<span class="xs mu">⚙️ token: in '+(pc.price_per_input_token??0)+'<br>out '+(pc.price_per_output_token??0)+'</span>', be:'—'};
+  }
+  const gốc=pc.price_per_request;
+  if(gốc==null) return {html:'<span class="xs mu">?</span>', be:'—'};
+  if(step==='video_i2v'){
+    const gốcPerReq = gốc;
+    const be = gốcPerReq / vnpc;
+    const earn = toolVal;
+    const margin = earn > 0 ? ((earn - gốcPerReq) / earn * 100) : null;
+    const badge = margin == null ? 'b-warn' : (margin >= 30 ? 'b-ok' : (margin >= 0 ? 'b-warn' : 'b-er'));
+    const badgeTxt = margin == null ? '—' : (margin >= 0 ? ('Lời ' + margin.toFixed(0) + '%') : ('Lỗ ' + (-margin).toFixed(0) + '%'));
+    const secs = (pc.seconds && pc.seconds.length) ? ' (' + pc.seconds.join('/') + 's)' : '';
+    return {html: '<span class="xs mu">' + fmtV(gốc) + '/req' + secs + '</span><br><span class="badge ' + badge + '">' + badgeTxt + '</span>', be: '≥ ' + be.toFixed(3) + ' credit/req'};
+  }
+  const be=gốc/vnpc;
+  const margin=toolVal>0?((toolVal-gốc)/toolVal*100):null;
+  const badgeTxt=margin==null?'—':(margin>=0?('Lời '+margin.toFixed(0)+'%'):('Lỗ '+(-margin).toFixed(0)+'%'));
+  const badge=margin==null?'b-warn':(margin>=30?'b-ok':(margin>=0?'b-warn':'b-er'));
+  return {html:'<span class="xs mu">'+fmtV(gốc)+'/req</span><br><span class="badge '+badge+'">'+badgeTxt+'</span>', be:'≥ '+be.toFixed(3)+' credit/req'};
+}
+
+// Tính giá tối thiểu (≥ hoà vốn, làm tròn lên theo bước 0.1 credit) để điền gợi ý vào ô giá
+function beNum(pc, m, vnpc){
+  if(!pc||pc.error||!pc.pricing_mode) return null;
+  if(pc.pricing_mode==='token') return null;
+  const gốc=pc.price_per_request;
+  if(gốc==null) return null;
+  return gốc/vnpc;
+}
+async function pgPricingModels(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  try{
+    const [prRes, modelsRes, pcRes]=await Promise.all([
+      api('/api/admin/pricing'),
+      api('/api/admin/models'),
+      api('/api/admin/provider-costs').catch(()=>({models:[]}))
+    ]);
+    const items=prRes.items||[];
+    const ms=modelsRes.models||[];
+    const settings=prRes.settings||{};
+    const vnpc=Number(settings.vnd_per_credit||1000);
+    const pcMap={}; (pcRes.models||[]).forEach(m=>{pcMap[m.id]=m});
+    pc.innerHTML=`
+      <div class="sec"><div><div class="ptitle">💰 Bảng giá &amp; Quản lý Model</div><div class="pdesc">Cấu hình giá credit, trạng thái bật/tắt và thêm model mới (không cần sửa code, tự áp dụng toàn hệ thống)</div></div></div>
+
+      <!-- 1. Bảng giá dịch vụ -->
+      <div class="card mt24">
+        <div><div class="ptitle">💰 Bảng giá dịch vụ</div><div class="pdesc">Tất cả model/lưu ý trong hệ thống — giá credit &amp; trạng thái bật/tắt áp dụng ngay cho người dùng</div></div>
+        <div class="tw"><table>
+          <tr><th><input type="checkbox" id="bulk-all" title="Chọn tất cả"></th><th>Dịch vụ / Model</th><th>Giá (Credit)</th><th>Trạng thái</th><th>Thao tác</th></tr>
+          ${items.map(i=>`<tr data-k="${esc(i.key)}">
+            <td><input type="checkbox" class="bulk-cb" data-bulk="${esc(i.key)}"></td>
+            <td class="bold sm">${esc(i.label||i.key)}</td>
+            <td><input type="number" step="0.1" value="${i.price}" id="p-${esc(i.key)}" style="width:110px"></td>
+            <td><select id="e-${esc(i.key)}" style="width:130px">
+              <option value="1" ${i.enabled?'selected':''}>🟢 Đang bật</option>
+              <option value="0" ${i.enabled?'':'selected'}>🔴 Tắt</option>
+            </select></td>
+            <td><button class="btn btn-sm btn-p" data-save-p="${esc(i.key)}">Lưu</button></td>
+          </tr>`).join('')}
+        </table></div>
+
+        <!-- Sửa hàng loạt: áp dụng giá + trạng thái cho nhiều model đã chọn -->
+        <div class="row mt12" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <div class="field" style="margin:0"><label>Giá mới (Credit) — để trống = không đổi</label>
+            <input type="number" step="0.1" id="bulk-price" placeholder="VD: 5" style="width:150px"></div>
+          <div class="field" style="margin:0"><label>Trạng thái</label>
+            <select id="bulk-enabled" style="width:170px">
+              <option value="">— Không đổi —</option>
+              <option value="1">🟢 Đang bật</option>
+              <option value="0">🔴 Tắt</option>
+            </select></div>
+          <button class="btn btn-p" id="bulk-apply">🔁 Áp dụng cho model đã chọn</button>
+          <span class="xs mu" id="bulk-count">0 model được chọn</span>
+        </div>
+      </div>
+
+      <!-- 2. Quản lý Model (admin thêm) -->
+      <div class="card mt24">
+        <div class="row mb12" style="align-items:flex-start">
+          <div>
+            <div class="bold sm">➕ Thêm / sửa model</div>
+            <div class="xs mu">${editModelId?'Đang chỉnh sửa: '+esc(editModelId):'Model mới — sau khi thêm tự hiện trong ô chọn người dùng'}</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">
+          <div class="field"><label>Tên model (hiển thị)</label><input id="m-name" placeholder="VD: MiniMax-H3 Pro"></div>
+          <div class="field"><label>Bước sử dụng</label><select id="m-step">
+            <option value="llm">LLM — tạo prompt/kịch bản</option>
+            <option value="image_generate">Gen ảnh</option>
+            <option value="video_i2v">Gen video</option>
+          </select></div>
+          <div class="field"><label>Base URL</label><input id="m-base" placeholder="VD: https://api.xah.io"></div>
+          <div class="field"><label>API Key</label><input id="m-key" placeholder="${editModelId?'Để trống = giữ key cũ':'sk-...'}"></div>
+          <div class="field"><label>Tên model gửi API (trường model)</label><input id="m-mname" placeholder="VD: MiniMax-H3"></div>
+          <div class="field"><label>Tối đa clip (giây) — giới hạn 1 lần gen của model</label><input id="m-maxclip" type="number" min="1" max="60" value="8" placeholder="8"></div>
+          <div class="field" style="grid-column:1/-1">
+            <label>Thời lượng video tổng hỗ trợ (giây) — click để chọn; custom thêm bên dưới</label>
+            <div id="m-durs" class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:6px"></div>
+            <div class="row" style="gap:6px">
+              <input id="m-dur-custom" placeholder="Custom: 7,12,45" style="flex:1">
+              <button class="btn btn-sm btn-p" id="m-dur-add">Thêm custom</button>
+            </div>
+            <div class="xs mu mt4">Chọn các mốc giây mà model này có thể gen (vd 5,10,20,30). Người dùng sẽ thấy các lựa chọn này khi gen video.</div>
+          </div>
+        </div>
+        <div class="row" style="gap:8px;margin-top:4px">
+          <button class="btn btn-ok" id="m-save">${editModelId?'💾 Lưu thay đổi':'➕ Thêm model'}</button>
+          ${editModelId?'<button class="btn btn-warn" id="m-cancel">Hủy sửa</button>':''}
+        </div>
+      </div>
+
+      <div class="card mt24">
+        <div class="row mb12" style="align-items:flex-start;justify-content:space-between">
+          <div><div class="ptitle">🧠 Model do admin đã thêm</div><div class="pdesc">Danh sách model qua form phía trên — bật/tắt, chỉnh giá, xóa đều áp dụng ngay</div></div>
+          <div class="row gap-8" style="align-items:center"><button class="btn btn-sm" id="pc-refresh" title="Gọi GET {base_url}/models qua từng API key admin và hiện giá gốc provider">🔄 Kéo giá gốc API</button><button class="btn btn-p" id="m-save-all" title="Lưu giá + trạng thái của TẤT CẢ model trong bảng">💾 Lưu tất cả</button><button class="btn btn-sm btn-p" id="pc-fill-be" title="Điền giá tối thiểu (gần hoà vốn) vào các ô giá còn 0">📈 Điền giá ≥ Hoà vốn</button></div>
+        </div>
+        <div class="tw"><table>
+          <tr><th>Tên</th><th>Bước</th><th>Base URL</th><th>API Key</th><th>Thời gian hỗ trợ</th><th>☁️ Giá gốc API (đ/đơn vị)</th><th>≥ Hoà vốn</th><th>Giá (Credit)</th><th>Trạng thái</th><th>Thao tác</th></tr>
+          ${ms.map(m=>{const pc=pcMap[m.id]||{};const info=pcInfo(pc,m,vnpc);return `<tr>
+            <td class="bold sm">${esc(m.name)}</td>
+            <td><span class="badge b-mu">${esc(m.step_label)}</span></td>
+            <td class="xs mu">${esc(m.base_url)}</td>
+            <td class="xs mu">${m.has_key?esc(m.api_key_masked):'—'}</td>
+            <td class="xs">${m.step==='video_i2v'?(m.supported_durations&&m.supported_durations.length?m.supported_durations.map(d=>d+'s').join(', '):'—'):'—'}</td>
+            <td>${info.html}</td>
+            <td class="xs">${info.be}</td>
+            <td><input type="number" step="0.1" value="${m.price!=null?m.price:0}" id="mp-${esc(m.id)}" style="width:90px"></td>
+            <td><select id="em-${esc(m.id)}" style="width:130px">
+              <option value="1" ${m.enabled?'selected':''}>🟢 Đang bật</option>
+              <option value="0" ${m.enabled?'':'selected'}>🔴 Tắt</option>
+            </select></td>
+            <td>
+              <button class="btn btn-sm" data-med="${esc(m.id)}">Sửa</button>
+              <button class="btn btn-sm btn-er" data-mdel="${esc(m.id)}">Xóa</button>
+            </td>
+          </tr>`}).join('')||`<tr><td class="mu" colspan="10">Chưa có model nào do admin thêm — dùng form phía trên để thêm mới</td></tr>`}
+        </table></div>
+      </div>`;
+
+    // Lưu giá + trạng thái (bảng giá) — chỉ lưu khi bấm nút Lưu
+    $$('[data-save-p]').forEach(b=>b.onclick=async()=>{
+      const k=b.dataset.saveP;
+      const pEl=document.getElementById('p-'+k), eEl=document.getElementById('e-'+k);
+      const p=parseFloat(pEl.value);
+      const en=eEl.value==='1';
+      try{
+        await put('/api/admin/pricing/'+encodeURIComponent(k),{price:p, enabled:en});
+        tok('Đã cập nhật '+k); pgPricingModels();
+      }catch(e){ter(e.message)}
+    });
+
+    // Lưu giá + trạng thái cho model do admin thêm
+    // Lưu TẤT CẢ model trong bảng: giá + trạng thái (mỗi dòng = 2 PUT giống nút Lưu cũ)
+    if($('#m-save-all'))$('#m-save-all').onclick=async()=>{
+      const btn=$('#m-save-all'); btn.disabled=true; const orig=btn.innerHTML; btn.innerHTML='<div class="spin"></div> Đang lưu...';
+      let saved=0, failed=0;
+      for(const m of ms){
+        const eEl=document.getElementById('em-'+m.id), pEl=document.getElementById('mp-'+m.id);
+        if(!eEl||!pEl) continue;
+        const en=eEl.value==='1';
+        const p=parseFloat(pEl.value);
+        try{
+          await put('/api/admin/models/'+m.id,{enabled:en});
+          if(!isNaN(p)) await put('/api/admin/pricing/'+encodeURIComponent('m.'+m.id),{price:p, enabled:en});
+          saved++;
+        }catch(e){ failed++; }
+      }
+      btn.disabled=false; btn.innerHTML=orig;
+      if(failed===0){ tok('Đã lưu tất cả '+saved+' model'); } else { ter('Lưu được '+saved+', lỗi '+failed+' model'); }
+      pgPricingModels();
+    };
+
+    // Điền giá tối thiểu (≥ hoà vốn) vào các ô giá còn 0 trong bảng model admin
+    if($('#pc-fill-be'))$('#pc-fill-be').onclick=async()=>{
+      let filled=0;
+      for(const m of ms){
+        const pEl=document.getElementById('mp-'+m.id);
+        if(!pEl) continue;
+        const cur=parseFloat(pEl.value||0);
+        if(cur>0) continue;
+        const pc=pcMap[m.id]||{};
+        const be=beNum(pc,m,vnpc);
+        if(be==null||!isFinite(be)) continue;
+        pEl.value=Math.ceil(be*10)/10;
+        filled++;
+      }
+      if(filled===0){ tok('Tất cả model đã có giá'); }
+      else { tok('Đã điền giá tối thiểu cho '+filled+' model — bấm 💾 Lưu tất cả để áp dụng'); }
+    };
+
+    // Sửa hàng loạt: áp dụng giá + trạng thái cho các model đã chọn
+    const bulkCbs=$$('[data-bulk]');
+    const bulkCount=$('#bulk-count');
+    const updBulkCount=()=>{bulkCount.textContent=bulkCbs.filter(c=>c.checked).length+' model được chọn'};
+    if($('#bulk-all'))$('#bulk-all').onchange=()=>{bulkCbs.forEach(c=>c.checked=$('#bulk-all').checked);updBulkCount()};
+    bulkCbs.forEach(c=>c.onchange=updBulkCount);
+    updBulkCount();
+    if($('#pc-refresh'))$('#pc-refresh').onclick=()=>pgPricingModels();
+    if($('#bulk-apply'))$('#bulk-apply').onclick=async()=>{
+      const keys=bulkCbs.filter(c=>c.checked).map(c=>c.dataset.bulk);
+      if(!keys.length){ter('Chưa chọn model nào để áp dụng');return}
+      const priceStr=$('#bulk-price').value.trim();
+      const priceVal=priceStr===''?null:parseFloat(priceStr);
+      if(priceVal!==null&&(isNaN(priceVal)||priceVal<0)){ter('Giá không hợp lệ');return}
+      const enStr=$('#bulk-enabled').value;
+      const en=enStr===''?null:enStr==='1';
+      if(priceVal===null&&en===null){ter('Hãy chọn giá hoặc trạng thái để áp dụng');return}
+      if(!confirm('Áp dụng '+(priceVal!==null?'giá '+priceVal+' credit ':'')+(en!==null?(priceVal!==null?'và ':'')+(en?'bật':'tắt'):'')+' cho '+keys.length+' model đã chọn?'))return;
+      try{
+        for(const k of keys){
+          const body={}; if(priceVal!==null)body.price=priceVal; if(en!==null)body.enabled=en;
+          await put('/api/admin/pricing/'+encodeURIComponent(k), body);
+        }
+        tok('Đã áp dụng cho '+keys.length+' model'); pgPricingModels();
+      }catch(e){ter(e.message)}
+    };
+
+    // Model form
+    if(editModelId){
+      const m=ms.find(x=>x.id===editModelId);
+      if(m){$('#m-name').value=m.name;$('#m-step').value=m.step;$('#m-base').value=m.base_url;$('#m-mname').value=m.model_name||'';$('#m-maxclip').value=m.max_clip_seconds||8;editDurs=[...(m.supported_durations||[])];renderDurChips()}
+      else editModelId=null;
+    }
+    $('#m-save').onclick=async()=>{
+      const body={name:$('#m-name').value, step:$('#m-step').value, base_url:$('#m-base').value,
+                  model_name:$('#m-mname').value, supported_durations:[...editDurs],
+                  max_clip_seconds:parseInt($('#m-maxclip').value)||8};
+      const key=$('#m-key').value.trim(); if(key)body.api_key=key;
+      if(!body.name||!body.base_url){ter('Tên và Base URL là bắt buộc');return}
+      try{
+        if(editModelId){await put('/api/admin/models/'+editModelId,body);tok('Đã lưu thay đổi');editModelId=null;editDurs=[]}
+        else{await post('/api/admin/models',body);tok('Đã thêm model — tự hiện trong ô chọn người dùng');editDurs=[]}
+        pgPricingModels();
+      }catch(e){ter(e.message)}
+    };
+    renderDurChips();
+    $('#m-dur-add').onclick=()=>{
+      const parts=$('#m-dur-custom').value.split(/[,;\s]+/).map(s=>parseInt(s)).filter(n=>n>0);
+      if(!parts.length){ter('Nhập số giây hợp lệ, ví dụ: 7,12');return}
+      editDurs=[...new Set([...editDurs,...parts])].sort((a,b)=>a-b);
+      $('#m-dur-custom').value='';
+      renderDurChips();
+    };
+    $('#m-dur-custom').onkeydown=e=>{if(e.key==='Enter'){$('#m-dur-add').click();e.preventDefault()}};
+    if($('#m-cancel'))$('#m-cancel').onclick=()=>{editModelId=null;editDurs=[];pgPricingModels()};
+    $$('[data-med]').forEach(b=>b.onclick=()=>{editModelId=b.dataset.med;pgPricingModels()});
+    $$('[data-mdel]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('Xóa model "'+b.dataset.mdel+'"? Hành động này không hoàn tác được.'))return;
+      try{await del('/api/admin/models/'+b.dataset.mdel);tok('Đã xóa model');if(editModelId===b.dataset.mdel)editModelId=null;pgPricingModels()}catch(e){ter(e.message)}
+    });
+  }catch(e){pc.innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`}
+}
+
+let editModelId=null;
+let editDurs=[];
+const DUR_PRESETS=[5,10,15,20,30,60];
+function renderDurChips(){
+  const box=$('#m-durs');
+  const all=[...new Set([...DUR_PRESETS,...editDurs])].sort((a,b)=>a-b);
+  box.innerHTML=all.map(d=>{
+    const on=editDurs.includes(d);
+    return `<button type="button" class="btn btn-sm" data-dur="${d}" style="${on?'background:linear-gradient(135deg,#22d3a0,#10b981);color:#fff;border-color:transparent;font-weight:700':''}">${on?'✓ ':' '}${d}s</button>`;
+  }).join('');
+  $$('[data-dur]').forEach(b=>b.onclick=()=>{
+    const d=+b.dataset.dur;
+    editDurs=editDurs.includes(d)?editDurs.filter(x=>x!==d):[...editDurs,d].sort((a,b)=>a-b);
+    renderDurChips();
+  });
+}
+async function pgPromos(){
+  const pc=$('#page');
+  pc.innerHTML=skeletonGrid(8);
+  let ps=[];
+  try{ ps=await api('/api/admin/promotions'); }catch(e){ pc.innerHTML=`<div class="card"><p class="er">${esc(e.message)}</p></div>`; return; }
+  const rows=()=>ps.map(p=>`<tr>
+    <td class="bold sm">${esc(p.name)}</td>
+    <td>${p.tiers.map(t=>`≥ ${fmtV(t.min_vnd)}: <b class="ok">+${t.bonus_percent}%</b>`).join(' · ')}</td>
+    <td class="xs mu">${p.end_at?fmtD(p.end_at):'Vô thời hạn'}</td>
+    <td><span class="badge ${p.enabled?'b-ok':'b-er'}">${p.enabled?'Đang chạy':'Dừng'}</span></td>
+    <td><div class="row gap-4">
+      <button class="btn btn-sm" data-promo-edit="${p.id}">✏️ Sửa</button>
+      <button class="btn btn-er btn-sm" data-promo-del="${p.id}">🗑 Xóa</button>
+    </div></td>
+  </tr>`).join('')||`<tr><td class="mu" colspan="5">Chưa có khuyến mãi</td></tr>`;
+  const promoForm=(p)=>{
+    const tiers=(p&&p.tiers&&p.tiers.length)?p.tiers:[{min_vnd:100000,bonus_percent:10}];
+    return `<div class="card mb16" id="promo-form">
+      <h3 class="mb12">${p?'✏️ Sửa khuyến mãi':'＋ Thêm khuyến mãi'}</h3>
+      <div class="field"><label>Tên chiến dịch</label><input id="promo-name" value="${p?esc(p.name):''}" placeholder="Ví dụ: Lễ 30/4 — nạp 100k thưởng 10%"></div>
+      <div class="field"><label>Mức thưởng (đạt mức nào lấy mức cao nhất, không cộng dồn)</label>
+        <div id="promo-tiers">${tiers.map(t=>`
+          <div class="row gap-8 mb4 promo-tier">
+            <input type="number" class="promo-min" min="1000" step="1000" value="${t.min_vnd}" placeholder="Nạp từ (đ)" style="width:180px">
+            <input type="number" class="promo-bonus" min="1" max="100" step="1" value="${t.bonus_percent}" placeholder="Thưởng %" style="width:110px">
+            <button type="button" class="btn btn-er btn-sm" data-promo-tier-del>✕</button>
+          </div>`).join('')}</div>
+        <button type="button" class="btn btn-sm mt4" id="promo-tier-add">＋ Thêm mức</button>
+      </div>
+      <div class="g2 mb12">
+        <div class="field"><label>Bắt đầu (tuỳ chọn)</label><input type="datetime-local" id="promo-start" value="${p&&p.start_at?p.start_at.slice(0,16):''}"></div>
+        <div class="field"><label>Kết thúc (tuỳ chọn)</label><input type="datetime-local" id="promo-end" value="${p&&p.end_at?p.end_at.slice(0,16):''}"></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px;font-size:13px"><input type="checkbox" id="promo-enabled" ${!p||p.enabled?'checked':''}> Bật chương trình</label>
+      <div class="row gap-8">
+        <button class="btn btn-p" id="promo-save">💾 Lưu</button>
+        <button class="btn" id="promo-cancel">Huỷ</button>
+      </div>
+      <div class="er xs mt8" id="promo-err"></div>
+    </div>`;
+  };
+  const render=(editing)=>{
+    const formHtml=editing!==undefined?promoForm(editing):null;
+    pc.innerHTML=`
+      <div class="sec"><div><div class="ptitle">Khuyến mãi Nạp tiền</div><div class="pdesc">Chính sách thưởng bonus khi người dùng nạp tiền. Mức thưởng chốt lúc tạo mã QR — đổi sau không ảnh hưởng QR đang chờ.</div></div></div>
+      <div class="row gap-8 mb12"><button class="btn btn-p" id="promo-add">＋ Thêm khuyến mãi</button></div>
+      ${formHtml||''}
+      <div class="card"><div class="tw"><table>
+        <tr><th>Tên chiến dịch</th><th>Mức thưởng</th><th>Thời hạn</th><th>Trạng thái</th><th></th></tr>
+        ${rows()}
+      </table></div></div>`;
+    document.getElementById('promo-add').onclick=()=>render(null);
+    $$('[data-promo-edit]').forEach(b=>b.onclick=()=>render(ps.find(x=>x.id===+b.dataset.promoEdit)));
+    $$('[data-promo-del]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('Xóa chương trình khuyến mãi này? Giao dịch cũ giữ nguyên phần thưởng đã chốt.'))return;
+      try{ await del('/api/admin/promotions/'+b.dataset.promoDel); tok('Đã xóa'); pgPromos(); }catch(e){ter(e.message)}
+    });
+    const box=document.getElementById('promo-tiers');
+    const tierAdd=document.getElementById('promo-tier-add');
+    if(tierAdd) tierAdd.onclick=()=>{
+      const div=document.createElement('div'); div.className='row gap-8 mb4 promo-tier';
+      div.innerHTML=`<input type="number" class="promo-min" min="1000" step="1000" placeholder="Nạp từ (đ)" style="width:180px">
+        <input type="number" class="promo-bonus" min="1" max="100" step="1" placeholder="Thưởng %" style="width:110px">
+        <button type="button" class="btn btn-er btn-sm" data-promo-tier-del>✕</button>`;
+      box.appendChild(div); bindTierDel();
+    };
+    const bindTierDel=()=>$$('[data-promo-tier-del]').forEach(b=>b.onclick=()=>b.closest('.promo-tier').remove());
+    bindTierDel();
+    const cancel=document.getElementById('promo-cancel'); if(cancel) cancel.onclick=()=>render(undefined);
+    const save=document.getElementById('promo-save'); if(!save)return;
+    save.onclick=async()=>{
+      const err=document.getElementById('promo-err'); err.textContent='';
+      const name=document.getElementById('promo-name').value.trim();
+      const tiers=[...document.querySelectorAll('.promo-tier')].map(r=>({
+        min_vnd:+r.querySelector('.promo-min').value,
+        bonus_percent:+r.querySelector('.promo-bonus').value,
+      })).filter(t=>t.min_vnd>0&&t.bonus_percent>0);
+      if(!name){ err.textContent='Nhập tên chiến dịch'; return; }
+      if(!tiers.length){ err.textContent='Cần ít nhất 1 mức thưởng'; return; }
+      const s=document.getElementById('promo-start').value, e2=document.getElementById('promo-end').value;
+      const body={name, tiers, start_at:s||null, end_at:e2||null, enabled:document.getElementById('promo-enabled').checked};
+      try{
+        if(editing&&editing.id) await put('/api/admin/promotions/'+editing.id, body);
+        else await post('/api/admin/promotions', body);
+        tok('Đã lưu khuyến mãi'); pgPromos();
+      }catch(ex){ err.textContent=ex.message; }
+    };
+  };
+  render(undefined);
+}
+function renderVideosTab(jobId, r){
+        // Tab Clip phôi: lưới clip từng cảnh + nút tải + trạng thái tự lưu
+        let vidHtml = '<h4 class="mb8">🎥 Clip phôi — tải về và tự edit</h4>';
+        vidHtml += '<div class="card-sm mb8" style="background:var(--gold-soft);border-color:var(--gold-line)"><div class="xs">Tool không dựng video final — không nối cảnh, không xfade, không loudnorm, không Ken Burns. Tải từng clip về rồi tự edit trong CapCut/Premiere. File TTS từng cảnh (nếu bật) có thể dùng làm voice-over.</div></div>';
+        const totalSc = (r.keyframes||[]).length;
+        const vids = (r.keyframes||[]).filter(kf=>kf.video_url);
+        vidHtml += '<div class="xs mu mb8">' + vids.length + '/' + totalSc + ' cảnh đã tạo clip</div>';
+        const failedSc = (r.keyframes||[]).filter(kf=>!kf.video_url).length;
+        if (failedSc > 0) {
+          vidHtml += '<div class="mt8"><button class="btn btn-p btn-sm" id="btn-retry-failed">🔁 Tạo lại '+failedSc+' cảnh lỗi (tốn credit)</button><div class="xs mu mt4" id="ap-retry-status"></div></div>';
+        }
+
+        if (vids.length) {
+          vidHtml += '<div class="vid-grid">';
+          vids.forEach(function(kf,idx){
+            vidHtml += '<div class="card-sm" style="padding:10px">'
+              + '<video controls src="' + esc(kf.video_url) + '" style="width:100%;border-radius:8px;background:#000"></video>'
+              + '<div class="row gap-6 mt8" style="justify-content:space-between;align-items:center">'
+              + '<div class="xs bold mu">Cảnh ' + (kf.stt||idx+1) + (kf['giai_đoạn'] ? ' · ' + esc(kf['giai_đoạn']) : '') + '</div>'
+              + '<a class="btn btn-p btn-sm" href="' + esc(kf.video_url) + '" download>⬇ Tải clip</a>'
+              + '</div></div>';
+          });
+          vidHtml += '</div>';
+        } else {
+          vidHtml += '<div class="card-sm">Chưa có clip nào.</div>';
+        }
+        (r.keyframes||[]).forEach(function(kf,idx){ if(kf.error) vidHtml += '<div class="xs er mt4">Cảnh ' + (kf.stt||idx+1) + ': ' + esc(kf.error) + '</div>'; });
+        const auds = (r.keyframes||[]).filter(kf=>kf.audio_url);
+        if (auds.length) {
+          vidHtml += '<div class="xs bold mu mt12">🔊 Thoại từng cảnh (TTS):</div><div class="row gap-6 mt4" style="flex-wrap:wrap">';
+          auds.forEach(function(kf,idx){
+            vidHtml += '<a class="btn btn-sm" href="' + esc(kf.audio_url) + '" download>⬇ Cảnh ' + (kf.stt||idx+1) + '</a>';
+          });
+          vidHtml += '</div>';
+        }
+        vidHtml += r.saved_template_id
+          ? '<div class="mt8"><button class="btn btn-ok btn-sm" disabled>✅ Đã tự động lưu vào Template của tôi</button></div>'
+          : '<div class="mt8"><button class="btn btn-p btn-sm" id="btn-save-pipeline">💾 Lưu vào Template của tôi</button></div>';
+        document.getElementById('ap-tab-videos').innerHTML = vidHtml;
+        // Bind save button
+        const retryBtn=document.getElementById('btn-retry-failed');
+        if(retryBtn){
+          retryBtn.onclick=async()=>{
+            if(!confirm('Tạo lại '+failedSc+' cảnh lỗi? Chỉ trừ credit cho cảnh thành công.')) return;
+            retryBtn.disabled=true;
+            const sc=document.getElementById('ap-retry-status');
+            try{
+              const res=await post('/api/assistant/pipeline/'+jobId+'/retry-failed',{});
+              if(sc) sc.textContent='Đang tạo lại '+(res.retried||failedSc)+' cảnh lỗi — vui lòng chờ...';
+              for(let ii=0;ii<900;ii++){
+                await new Promise(r2=>setTimeout(r2,2000));
+                const st=await api('/api/assistant/pipeline/'+jobId+'/status');
+                if(sc) sc.textContent=(st.step||st.status||'');
+                if(st.status==='done'||st.status==='failed'||st.status==='cancelled'){
+                  tok(st.status==='done'?'Đã tạo lại xong — clip mới hiện bên dưới':'Tạo lại kết thúc: '+st.status);
+                  renderVideosTab(jobId, st.result||{});
+                  return;
+                }
+              }
+              if(sc) sc.textContent='Hết thời gian chờ — bấm F5 để tải lại.';
+            }catch(e){ter(e.message);retryBtn.disabled=false;}
+          };
+        }
+
+        const saveBtn=document.getElementById('btn-save-pipeline');
+        if(saveBtn){
+          saveBtn.onclick=async()=>{
+            try{
+              const res=await post('/api/assistant/pipeline/'+jobId+'/save',{});
+              tok('Đã lưu: '+res.title);
+            }catch(e){ter(e.message)}
+          };
+        }}
+
+/* ── TRACK GEN HELPER ── */
+function trackGen(id,resId){
+  const tick=async()=>{
+    const area=document.getElementById(resId);if(!area)return;
+    try{
+      const g=await api('/api/generations/'+id);await refreshMe();
+      if(g.status==='success'){
+        area.innerHTML=`<div class="card su" style="border-color:rgba(34,211,160,.3)">
+          <div class="row mb12"><span class="badge b-ok">✅ Hoàn thành</span><span class="xs mu">Trừ ${g.credits_cost} credit</span></div>
+          <video controls src="${esc(g.output_video_url)}" style="width:100%;max-height:380px;border-radius:var(--radius-sm);background:#000"></video>
+          <div class="row mt12 gap-8">
+            <a href="${esc(g.output_video_url)}" download class="btn btn-sm btn-ok">⬇ Tải xuống</a>
+            <a href="${esc(g.output_video_url)}" target="_blank" class="btn btn-sm">↗ Mở</a>
+          </div>
+        </div>`;
+      }else if(g.status==='failed'){
+        area.innerHTML=`<div class="card-sm su" style="background:var(--er2);border:1px solid rgba(248,113,113,.3);border-radius:var(--radius)">
+          <span class="er">❌ Lỗi: ${esc(g.error_message)} — đã hoàn credit.</span></div>`;
+      }else{
+        const ai=g.render_type.startsWith('ai');
+        if(!area.dataset.t0) area.dataset.t0=String(Date.now());
+        const sec=(Date.now()-+area.dataset.t0)/1000;
+        const pct=Math.min(88, Math.round(10 + sec*(ai?0.7:3)));
+        area.innerHTML=`<div class="card-sm su" style="background:var(--bg3)">
+          <div class="row gap-8 mb8"><div class="spin"></div><span>${ai?'🤖 Đang tạo video AI (vài phút)...':'⚡ Đang xử lý...'}</span></div>
+          <div class="pb"><div class="pf" style="width:${pct}%"></div></div>
+        </div>`;
+        pollT=setTimeout(tick,2200);
+      }
+    }catch(e){const a=document.getElementById(resId);if(a)a.innerHTML=`<p class="er sm">Lỗi kiểm tra: ${esc(e.message)}</p>`}
+  };
+  tick();
+}
+
+/* ══════════ HỖ TRỢ + TRỢ LÝ AI ══════════ */
+let _supLinks={};
+async function initSupport(){
+  try{ const s=await api('/api/support'); _supLinks=s||{}; }catch{ _supLinks={}; }
+  const map=[['#sup-zalo',_supLinks.zalo],['#sup-fb',_supLinks.facebook]];
+  for(const [sel,url] of map){
+    const el=$(sel); if(!el) continue;
+    const ok=!!(url && /^https?:\/\//.test(url));
+    el.classList.toggle('off',!ok);
+    el.title=ok?('Mở: '+url):'Chưa cấu hình — vào tab 🛠 Admin → Liên hệ hỗ trợ để thêm';
+    el.onclick=()=>{
+      if(ok){ window.open(url,'_blank','noopener'); return; }
+      ter('Chưa cấu hình liên kết này. Vào tab 🛠 Admin → "Liên hệ hỗ trợ" để thêm.');
+    };
+  }
+}
+initSupport();
+
+let _chatHist=[], _chatBusy=false, _chatLoaded=false;
+function _chatReset(){
+  const log=$('#chat-log'); if(!log) return;
+  log.innerHTML='<div class="chat-msg bot">👋 Chào bạn! Mình có thể hướng dẫn cách tạo video AI, dịch &amp; thêm phụ đề, tải video MXH, nạp credit… Bạn cứ hỏi nhé.</div>';
+}
+async function _chatLoad(force){
+  if(!token) return;
+  if(_chatLoaded && !force) return;
+  try{
+    const r=await api('/api/chat/history');
+    _chatLoaded=true;
+    const msgs=r.messages||[];
+    const log=$('#chat-log'); if(!log) return;
+    if(!msgs.length) return;
+    log.innerHTML='';
+    for(const m of msgs) _chatAdd(m.role==='user'?'user':'bot', m.content);
+  }catch{ /* giữ nguyên lời chào */ }
+}
+function _chatShow(v){
+  const p=$('#chat-panel'), f=$('#chat-fab'); if(!p) return;
+  p.classList.toggle('hide',!v);
+  if(f) f.classList.toggle('on',!!v);
+  if(v){ const b=$('#chat-bubble'); if(b) b.classList.add('hide'); _chatLoad(); const t=$('#chat-text'); if(t) t.focus(); }
+}
+function _chatAdd(role,text){
+  const log=$('#chat-log'); if(!log) return;
+  const d=document.createElement('div');
+  d.className='chat-msg '+(role==='user'?'me':'bot');
+  d.textContent=text;
+  log.appendChild(d); log.scrollTop=log.scrollHeight;
+  return d;
+}
+async function _chatSend(){
+  if(_chatBusy) return;
+  const ta=$('#chat-text'); if(!ta) return;
+  const msg=ta.value.trim(); if(!msg) return;
+  if(!token){ _chatAdd('bot','Vui lòng đăng nhập để dùng trợ lý AI.'); return; }
+  ta.value='';
+  _chatAdd('user',msg);
+  const typing=_chatAdd('bot','Đang trả lời…'); if(typing) typing.classList.add('typing');
+  _chatBusy=true; const btn=$('#chat-send'); if(btn){btn.disabled=true;}
+  try{
+    const r=await post('/api/chat',{message:msg});
+    if(typing){ typing.classList.remove('typing'); typing.textContent=r.reply; const log=$('#chat-log'); if(log) log.scrollTop=log.scrollHeight; }
+  }catch(e){
+    if(typing){ typing.classList.remove('typing'); typing.textContent='⚠️ '+e.message; }
+  }finally{
+    _chatBusy=false; const b=$('#chat-send'); if(b) b.disabled=false;
+  }
+}
+$('#chat-fab').onclick=()=>{ const p=$('#chat-panel'); _chatShow(p.classList.contains('hide')); };
+$('#chat-close').onclick=()=>_chatShow(false);
+/* Bong bóng gợi ý: tự hiện câu hỏi ngẫu nhiên, bấm vào là mở chat */
+const CHAT_QUESTIONS=[
+  'Bạn có mắc nào không?',
+  'Bạn cần mình hỗ trợ gì không?',
+  'Bạn đang muốn tạo video gì?',
+  'Chưa biết dùng sao? Cứ hỏi mình nhé!',
+  'Muốn xem cách làm từng tính năng không?',
+  'Đăng ký gặp lỗi à? Hỏi mình một câu nhé.'
+];
+let _bubbleT=null;
+function showChatBubble(){
+  const b=$('#chat-bubble'); if(!b) return;
+  if(!token) return;
+  const panel=$('#chat-panel');
+  if(panel && !panel.classList.contains('hide')) return;
+  b.textContent=CHAT_QUESTIONS[Math.floor(Math.random()*CHAT_QUESTIONS.length)];
+  b.classList.remove('hide');
+  clearTimeout(_bubbleT);
+  _bubbleT=setTimeout(()=>b.classList.add('hide'),7000);
+}
+setTimeout(showChatBubble,4000);
+setInterval(showChatBubble,11000);
+$('#chat-bubble').onclick=()=>{ $('#chat-bubble').classList.add('hide'); _chatShow(true); };
+$('#chat-clear').onclick=async()=>{
+  if(!confirm('Xoá toàn bộ lịch sử chat của tài khoản này?')) return;
+  try{ await del('/api/chat/history'); }catch(e){ ter(e.message); return; }
+  _chatReset(); _chatLoaded=true; tok('Đã xoá lịch sử chat');
+};
+$('#chat-send').onclick=_chatSend;
+$('#chat-text').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); _chatSend(); }
+});
+
+/* ── SIDEBAR THU GỌN ── */
+(function(){
+  try{ if(localStorage.sbCollapsed==='1'){ const w=document.getElementById('app-wrap'); if(w) w.classList.add('sb-collapsed'); } }catch(e){}
+  const b=document.getElementById('sb-toggle');
+  if(b) b.onclick=()=>{
+    const w=document.getElementById('app-wrap'); if(!w) return;
+    w.classList.toggle('sb-collapsed');
+    const on=w.classList.contains('sb-collapsed');
+    b.setAttribute('aria-expanded', String(!on));
+    b.title=on?'Mở rộng thanh điều hướng':'Thu gọn thanh điều hướng';
+    b.setAttribute('aria-label', b.title);
+    try{ localStorage.sbCollapsed=on?'1':'0'; }catch(e){}
+  };
+})();
+
+/* ── INIT ── */
+boot();
+
+

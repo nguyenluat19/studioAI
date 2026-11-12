@@ -1,0 +1,48 @@
+﻿# docker compose up --build        -> web app + Redis (fast render, payments, AI)
+# docker compose --profile worker up --build   -> also the AI-video (MiniMax) worker
+# MimicMotion needs a GPU: run its worker on the host:  celery -A app.tasks.celery_app worker -n gpu@%h -Q gpu -c 1
+services:
+  web:
+    build: .
+    # Chỉ bind localhost — public Internet đi qua Cloudflare Tunnel, không lộ ra LAN/Internet
+    ports: ["127.0.0.1:8001:8001"]
+    env_file: .env
+    environment:
+      STORAGE_DIR: /app/storage
+      # SQLite phải nằm trên named volume (ổ ext4 bên trong WSL2) — KHÔNG chạy trên
+      # bind-mount Windows↔Linux: lock/mmap của SQLite qua 9P không đáng tin → hỏng DB
+      DATABASE_URL: sqlite:////app/data/app.db
+      REDIS_URL: redis://redis:6379/0
+      PORT: "8001"
+    volumes:
+      - "./storage:/app/storage"
+      - "./.env:/app/.env"
+      - "videoai-db:/app/data"
+    depends_on:
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]      # lets a host-side GPU worker connect
+    restart: unless-stopped
+  worker-ai:               # MiniMax-H3 jobs (just waits on the API, no GPU needed)
+    build: .
+    profiles: ["worker"]
+    command: celery -A app.tasks.celery_app worker -n ai@%h -Q ai -c 4 --loglevel=info
+    env_file: .env
+    environment:
+      STORAGE_DIR: /app/storage
+      DATABASE_URL: sqlite:////app/data/app.db
+      REDIS_URL: redis://redis:6379/0
+    volumes: ["./storage:/app/storage", "videoai-db:/app/data"]
+    depends_on: [redis]
+
+volumes:
+  videoai-db:
