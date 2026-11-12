@@ -8,7 +8,10 @@ to confirm against the live API.
 import base64
 import io
 import json
+<<<<<<< HEAD
 import logging
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 import mimetypes
 import subprocess
 import time
@@ -24,8 +27,11 @@ except ImportError:
 
 from .config import settings
 
+<<<<<<< HEAD
 logger = logging.getLogger(__name__)
 
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 RATIOS = ("9:16", "16:9", "1:1", "4:3", "3:4", "21:9")
 RESOLUTIONS = ("768P", "2K")
 MIN_SECONDS, MAX_SECONDS = 4, 15
@@ -39,6 +45,7 @@ QUERY_FALLBACKS = (
     "/v1/query/video_generation?task_id={task_id}",
 )
 
+<<<<<<< HEAD
 # Giao thức OpenAI-style (/v1/videos): dùng cho các gateway không có endpoint
 # MiniMax (vd api.vilao.ai). Nhận diện tự động: gọi tạo task kiểu MiniMax trước,
 # nếu gateway trả 404/405 (không có route) thì chuyển sang OpenAI-style.
@@ -46,22 +53,32 @@ OPENAI_OK_STATES = {"completed", "succeeded", "success", "done", "finished"}
 OPENAI_FAIL_STATES = {"failed", "fail", "cancelled", "canceled", "error", "expired"}
 _openai_bases: set[str] = set()
 
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 class VideoError(RuntimeError):
     pass
 
 
+<<<<<<< HEAD
 class VideoRouteMissing(VideoError):
     """Gateway không có endpoint kiểu MiniMax — thử giao thức OpenAI-style."""
 
 
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 def configured() -> bool:
     return bool(settings.minimax_api_key)
 
 
+<<<<<<< HEAD
 def _headers(api_key: str | None = None) -> dict:
     return {"Authorization": f"Bearer {api_key or settings.minimax_api_key}",
             "Content-Type": "application/json"}
+=======
+def _headers() -> dict:
+    return {"Authorization": f"Bearer {settings.minimax_api_key}", "Content-Type": "application/json"}
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 def _dig(d, *paths):
@@ -101,7 +118,11 @@ def _ensure_min_size(image_bytes: bytes, mime: str) -> tuple[bytes, str]:
 
 
 def build_payload(prompt: str, duration: int, ratio: str, resolution: str,
+<<<<<<< HEAD
                   first_frame: Path | None = None, model: str | None = None) -> dict:
+=======
+                  first_frame: Path | None = None) -> dict:
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     content: list[dict] = [{"type": "text", "text": prompt}]
     if first_frame is not None:
         raw = first_frame.read_bytes()
@@ -110,7 +131,11 @@ def build_payload(prompt: str, duration: int, ratio: str, resolution: str,
         b64 = base64.b64encode(raw).decode()
         content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"},
                         "role": "first_frame"})
+<<<<<<< HEAD
     body = {"model": model or settings.minimax_model, "content": content, "resolution": resolution,
+=======
+    body = {"model": settings.minimax_model, "content": content, "resolution": resolution,
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
             "duration": duration, "ratio": ratio}
     if settings.minimax_extra:
         try:
@@ -129,6 +154,7 @@ def _check_base_resp(data: dict) -> None:
         raise VideoError(f"MiniMax lỗi: {err}")
 
 
+<<<<<<< HEAD
 def create_task(client: httpx.Client, payload: dict, base_url: str | None = None,
                 api_key: str | None = None) -> str:
     base = (base_url or settings.minimax_base_url).rstrip("/")
@@ -179,6 +205,35 @@ def query_task(client: httpx.Client, task_id: str, base_url: str | None = None,
         if r.status_code >= 400:
             raise VideoError(f"MiniMax tra cứu lỗi HTTP {r.status_code}: {r.text[:300]}")
         _query_template[base] = tmpl
+=======
+def create_task(client: httpx.Client, payload: dict) -> str:
+    r = client.post(settings.minimax_base_url + settings.minimax_create_path, json=payload, headers=_headers())
+    if r.status_code >= 400:
+        raise VideoError(f"MiniMax tạo task lỗi HTTP {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    _check_base_resp(data)
+    tid = _dig(data, "task_id", "id", "data.task_id", "task.id", "task.task_id")
+    if not tid:
+        raise VideoError(f"MiniMax không trả task_id: {str(data)[:300]}")
+    return str(tid)
+
+
+_query_template: list[str] = []   # remembers the first query path that worked
+
+
+def query_task(client: httpx.Client, task_id: str) -> tuple[str, str | None, dict]:
+    """-> (state: 'ok'|'failed'|'pending', video_url|None, raw)"""
+    candidates = list(_query_template) or [settings.minimax_query_path, *QUERY_FALLBACKS]
+    last = None
+    for tmpl in candidates:
+        r = client.get(settings.minimax_base_url + tmpl.format(task_id=task_id), headers=_headers())
+        if r.status_code in (404, 405):
+            last = r
+            continue
+        if r.status_code >= 400:
+            raise VideoError(f"MiniMax tra cứu lỗi HTTP {r.status_code}: {r.text[:300]}")
+        _query_template[:] = [tmpl]
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         data = r.json()
         _check_base_resp(data)
         status = str(_dig(data, "status", "task.status", "data.status") or "").lower()
@@ -186,7 +241,11 @@ def query_task(client: httpx.Client, task_id: str, base_url: str | None = None,
         if not url and status in OK_STATES:
             fid = _dig(data, "file_id", "task.file_id", "data.file_id")
             if fid:
+<<<<<<< HEAD
                 url = _file_url(client, fid, base_url=base_url, api_key=api_key)
+=======
+                url = _file_url(client, fid)
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         if status in FAIL_STATES:
             return "failed", None, data
         return ("ok" if (status in OK_STATES and url) else "pending"), url, data
@@ -194,6 +253,7 @@ def query_task(client: httpx.Client, task_id: str, base_url: str | None = None,
                      "chạy scripts/check_minimax.py và đặt MINIMAX_QUERY_PATH")
 
 
+<<<<<<< HEAD
 def _file_url(client: httpx.Client, file_id: str, base_url: str | None = None,
               api_key: str | None = None) -> str | None:
     base = (base_url or settings.minimax_base_url).rstrip("/")
@@ -289,6 +349,14 @@ def _openai_query(client: httpx.Client, task_id: str, *, base: str, api_key: str
     return ("ok" if status in OPENAI_OK_STATES else "pending"), url, data
 
 
+=======
+def _file_url(client: httpx.Client, file_id: str) -> str | None:
+    r = client.get(f"{settings.minimax_base_url}/v1/files/retrieve", params={"file_id": file_id},
+                   headers=_headers())
+    return _dig(r.json(), "file.download_url", "download_url") if r.status_code < 400 else None
+
+
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 def has_video_stream(path: Path) -> bool:
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                           "stream=codec_type", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
@@ -296,6 +364,7 @@ def has_video_stream(path: Path) -> bool:
 
 
 def generate(prompt: str, dest: Path, *, duration: int = 5, ratio: str = "9:16", resolution: str = "768P",
+<<<<<<< HEAD
              first_frame: Path | None = None, on_progress=lambda: None,
              base_url: str | None = None, api_key: str | None = None, model: str | None = None) -> Path:
     """Blocks (polling) until the video is saved to `dest`; raises VideoError on any failure."""
@@ -328,10 +397,24 @@ def generate(prompt: str, dest: Path, *, duration: int = 5, ratio: str = "9:16",
             deadline = time.monotonic() + settings.minimax_max_wait
             while True:
                 state, url, raw = poll()
+=======
+             first_frame: Path | None = None, on_progress=lambda: None) -> Path:
+    """Blocks (polling) until the video is saved to `dest`; raises VideoError on any failure."""
+    if not configured():
+        raise VideoError("MINIMAX_API_KEY chưa được cấu hình")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with httpx.Client(timeout=60) as client:
+            tid = create_task(client, build_payload(prompt, duration, ratio, resolution, first_frame))
+            deadline = time.monotonic() + settings.minimax_max_wait
+            while True:
+                state, url, raw = query_task(client, tid)
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
                 on_progress()   # heartbeat so the reaper knows we are alive
                 if state == "ok":
                     break
                 if state == "failed":
+<<<<<<< HEAD
                     raise VideoError(f"Tạo video thất bại: {str(raw)[:300]}")
                 if time.monotonic() > deadline:
                     raise VideoError(f"Video quá thời gian chờ ({int(settings.minimax_max_wait)}s) cho task {tid}")
@@ -380,6 +463,20 @@ def generate(prompt: str, dest: Path, *, duration: int = 5, ratio: str = "9:16",
                 raise VideoError(f"Tải video thất bại sau nhiều lần thử (cuối cùng: {last})")
     except httpx.HTTPError as e:
         raise VideoError(f"Lỗi mạng khi gọi gateway video: {e}") from e
+=======
+                    raise VideoError(f"MiniMax tạo video thất bại: {str(raw)[:300]}")
+                if time.monotonic() > deadline:
+                    raise VideoError(f"MiniMax quá thời gian chờ ({int(settings.minimax_max_wait)}s) cho task {tid}")
+                time.sleep(settings.minimax_poll)
+            with client.stream("GET", url, timeout=300, follow_redirects=True) as resp:
+                if resp.status_code >= 400:
+                    raise VideoError(f"Tải video lỗi HTTP {resp.status_code}")
+                with dest.open("wb") as f:
+                    for chunk in resp.iter_bytes(1 << 20):
+                        f.write(chunk)
+    except httpx.HTTPError as e:
+        raise VideoError(f"Lỗi mạng khi gọi MiniMax: {e}") from e
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     if not dest.exists() or dest.stat().st_size < 1000 or not has_video_stream(dest):
         dest.unlink(missing_ok=True)
         raise VideoError("File tải về từ MiniMax không phải video hợp lệ")

@@ -1,13 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import math
+<<<<<<< HEAD
 import json
 import logging
 import re
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+<<<<<<< HEAD
 from datetime import datetime, timedelta, timezone
 
 from .. import credits, pricing, promotions
@@ -25,6 +29,19 @@ from .templates import tpl_out
 
 logger = logging.getLogger(__name__)
 
+=======
+from datetime import datetime
+
+from .. import credits, pricing, promotions
+from ..db import get_db
+from ..deps import admin_user
+from ..maintenance import as_utc
+from ..models import (CreditAdjustment, GenerationHistory, PricingLog, Promotion, SharedVideoLibrary, Transaction, User,
+                      WebhookLog)
+from .billing import tx_out
+from .templates import tpl_out
+
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(admin_user)])
 
 
@@ -100,6 +117,7 @@ def users(q: str | None = None, limit: int = 200, db: Session = Depends(get_db))
 MAX_ADJUST = 10_000_000
 
 
+<<<<<<< HEAD
 # ---------------- Analytics ----------------
 _PERIODS = ("lifetime", "today", "yesterday", "l7d", "l30d", "custom")
 
@@ -275,6 +293,8 @@ def user_update(uid: int, body: UserUpdateIn, db: Session = Depends(get_db),
     return {"id": u.id, "username": u.username, "email": u.email, "role": u.role}
 
 
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 class GrantIn(BaseModel):
     amount: float
     reason: str = ""
@@ -322,6 +342,7 @@ def approve(tid: int, db: Session = Depends(get_db)):
     return {"id": tid, "status": "success"}
 
 
+<<<<<<< HEAD
 # ---------------- Giọng clone toàn hệ thống (admin) ----------------
 
 
@@ -404,6 +425,9 @@ def feature_usage(db: Session = Depends(get_db), limit: int = 200):
             for u, name in rows]
 
 
+=======
+# ---------------- pricing dashboard ----------------
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 class PriceIn(BaseModel):
     price: float | None = None
     enabled: bool | None = None
@@ -417,7 +441,11 @@ class PricingSettingsIn(BaseModel):
 
 def _pricing_item_out(db: Session, cat: dict, row) -> dict:
     return {"key": cat["key"], "label": cat["label"], "group": cat["group"],
+<<<<<<< HEAD
             "group_label": pricing.GROUP_LABELS.get(cat["group"], cat["group"]), "unit": cat["unit"], "desc": cat.get("desc", ""),
+=======
+            "group_label": pricing.GROUP_LABELS[cat["group"]], "unit": cat["unit"], "desc": cat.get("desc", ""),
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
             "price": row.price, "default": cat["default"], "enabled": row.enabled, "cost_usd": cat["cost_usd"],
             "margin_percent": pricing.margin_percent(db, cat, row.price),
             "updated_at": row.updated_at, "updated_by": row.updated_by}
@@ -552,6 +580,7 @@ def webhook_log(result: str | None = None, db: Session = Depends(get_db)):
              "content": w.content, "result": w.result, "created_at": w.created_at} for w in db.scalars(q)]
 
 
+<<<<<<< HEAD
 # Model do admin thêm qua giao diện (app/adminmodels.py): CRUD, không cần sửa code
 class AdminModelIn(BaseModel):
     name: str
@@ -671,6 +700,9 @@ def provider_costs(db: Session = Depends(get_db)):
     _PCACHE["ts"] = now
     _PCACHE["data"] = {"models": out}
     return _PCACHE["data"]
+=======
+# Muse AI endpoints removed - only Wan2.1 video model remains
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 @router.get("/stats")
@@ -684,6 +716,7 @@ def stats(db: Session = Depends(get_db)):
         "pending_templates": db.scalar(select(func.count(SharedVideoLibrary.id))
                                        .where(SharedVideoLibrary.status == "private")),
     }
+<<<<<<< HEAD
 
 
 # ─── Liên hệ hỗ trợ (nút Zalo/Facebook/Telegram trong UI + widget) ──────────────
@@ -708,3 +741,5 @@ def admin_set_support(body: SupportIn, db: Session = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(422, str(e))
     return out
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa

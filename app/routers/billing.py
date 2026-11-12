@@ -1,5 +1,8 @@
 import hmac
+<<<<<<< HEAD
 import logging
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 import re
 import secrets
 from urllib.parse import quote
@@ -118,9 +121,12 @@ def transaction_status(tid: int, db: Session = Depends(get_db), user: User = Dep
     return tx_out(t)
 
 
+<<<<<<< HEAD
 logger = logging.getLogger(__name__)
 
 
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 # ---------------- Webhook (SePay / Casso) ----------------
 def _eq(a: str, b: str) -> bool:
     return bool(a) and bool(b) and hmac.compare_digest(a.encode(), b.encode())
@@ -133,9 +139,12 @@ def _authenticate(request: Request) -> str:
         return "sepay"
     if _eq(request.headers.get("secure-token", ""), settings.casso_secure_token):
         return "casso"
+<<<<<<< HEAD
     scheme = auth.split(" ", 1)[0] if auth else "NONE"
     logger.warning("webhook auth miss: scheme=%s sepay_key_set=%s",
                    scheme, bool(settings.sepay_api_key))
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     raise HTTPException(401, "Webhook không được xác thực")
 
 
@@ -144,9 +153,14 @@ def _normalize(provider: str, payload: dict) -> list[tuple[str, float]]:
     out: list[tuple[str, float]] = []
     if provider == "sepay":
         if payload.get("transferType", "in") == "in":
+<<<<<<< HEAD
             amt = float(payload.get("transferAmount", 0))
             if amt > 0:
                 out.append((f"{payload.get('content', '')} {payload.get('code') or ''}", amt))
+=======
+            out.append((f"{payload.get('content', '')} {payload.get('code') or ''}",
+                        float(payload.get("transferAmount", 0))))
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     else:
         for item in payload.get("data", []) or []:
             amt = float(item.get("amount", 0))
@@ -161,7 +175,11 @@ async def payment_webhook(request: Request, db: Session = Depends(get_db)):
     try:
         payload = await request.json()
         items = _normalize(provider, payload)
+<<<<<<< HEAD
     except Exception:
+=======
+    except (ValueError, TypeError, AttributeError):
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         raise HTTPException(400, "Payload không hợp lệ")
 
     expire_transactions(db)   # an unpaid QR past its lifetime is already `failed` here

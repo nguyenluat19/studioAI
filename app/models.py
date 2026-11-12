@@ -18,10 +18,13 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     credits_balance: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)  # user | admin
+<<<<<<< HEAD
     # Xác minh số điện thoại khi đăng ký (OTP qua SMS). phone_verified mặc định True
     # để tài khoản tạo trước khi có tính năng OTP vẫn đăng nhập được.
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True, unique=True)
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -149,6 +152,7 @@ class CreditAdjustment(Base):
     balance_after: Mapped[float] = mapped_column(Float, nullable=False)
     reason: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+<<<<<<< HEAD
 
 
 class CreditLedgerEntry(Base):
@@ -259,3 +263,5 @@ class PhoneOtp(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa

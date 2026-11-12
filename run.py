@@ -8,8 +8,11 @@ import argparse
 import os
 import secrets
 import shutil
+<<<<<<< HEAD
 import signal
 import socket
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 import subprocess
 import sys
 import time
@@ -19,6 +22,7 @@ ROOT = Path(__file__).resolve().parent
 ENV = ROOT / ".env"
 
 
+<<<<<<< HEAD
 def port_listening(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.6)
@@ -123,6 +127,8 @@ def ensure_port_available(host: str, port: int) -> bool:
     return False
 
 
+=======
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 def ensure_env() -> None:
     if ENV.exists():
         return
@@ -166,10 +172,15 @@ def main() -> int:
 
     ensure_env()
     os.chdir(ROOT)
+<<<<<<< HEAD
     if not ensure_port_available(args.host, args.port):
         return 1
     if not (env_value("VILAO_BASE_URL") and env_value("VILAO_API_KEY")):
         print("  ! VILAO_BASE_URL / VILAO_API_KEY are empty in .env — AI features are off "
+=======
+    if not (env_value("INKSTONE_BASE_URL") and env_value("INKSTONE_API_KEY")):
+        print("  ! INKSTONE_BASE_URL / INKSTONE_API_KEY are empty in .env — AI features are off "
+>>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
               "(rendering and payments still work).")
 
     children: list[subprocess.Popen] = []
