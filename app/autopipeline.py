@@ -3,7 +3,6 @@
 Mỗi bước dùng MỘT model do người dùng chọn, không tự chuyển model khi lỗi.
 Chạy tự động end-to-end, khách hàng chỉ cần nhập yêu cầu và chọn model mỗi giai đoạn.
 """
-<<<<<<< HEAD
 import logging
 import secrets
 import threading
@@ -19,25 +18,6 @@ from . import videopipeline as vp
 
 logger = logging.getLogger(__name__)
 
-=======
-import json
-import math
-import re
-import secrets
-import threading
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
-from typing import Any
-
-from . import ai, minimax, pricing
-from .config import settings
-from .db import SessionLocal
-from .media import resolve, url_for
-from .modelregistry import clip_count_for_duration, get_model, models_for_step
-from .tasks import ai_render_task, broker_up, run_generation
-from . import videopipeline as vp
-
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -57,7 +37,6 @@ def _safe_str(s: Any, max_len: int = 500) -> str:
     return text[:max_len]
 
 
-<<<<<<< HEAD
 def _pipeline_progress(job: "PipelineJob", status: str, progress: int, step: str) -> None:
     job.update(status=status, progress=progress, step=step)
 
@@ -122,15 +101,6 @@ class PipelineJob:
                  use_tts: bool = False, language: str = "vi",
                  mode: str = "standard", outfit_image_url: str | None = None,
                  hook_seconds: int = 3, preset: str = "", usage_id: int | None = None):
-=======
-# ---------------------------------------------------------------------------
-# In-memory pipeline job store (dev/local). Prod có thể chuyển sang DB/Redis.
-# ---------------------------------------------------------------------------
-class PipelineJob:
-    def __init__(self, job_id: str, user_id: int, selections: dict,
-                 idea: str, duration: int, aspect_ratio: str,
-                 character_image_url: str | None):
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         self.job_id = job_id
         self.user_id = user_id
         self.selections = selections
@@ -138,7 +108,6 @@ class PipelineJob:
         self.duration = duration
         self.aspect_ratio = aspect_ratio
         self.character_image_url = character_image_url
-<<<<<<< HEAD
         self.mode = str(mode or "standard")
         self.outfit_image_url = outfit_image_url
         self.preset = str(preset or "")
@@ -148,22 +117,15 @@ class PipelineJob:
         self.voice = voice
         self.use_tts = use_tts
         self.status = "queued"  # queued | planning | keyframing | rendering | editing | done | failed | cancelled
-=======
-        self.status = "queued"  # queued | planning | keyframing | rendering | editing | done | failed
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         self.progress = 0
         self.step = ""
         self.error = ""
         self.result: dict | None = None
-<<<<<<< HEAD
         self.cancelled = False
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         self.created_at = _now()
         self.updated_at = _now()
         self._lock = threading.Lock()
 
-<<<<<<< HEAD
     def cancel(self) -> None:
         with self._lock:
             self.cancelled = True
@@ -177,8 +139,6 @@ class PipelineJob:
         with self._lock:
             return self.cancelled
 
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     def update(self, status: str = None, progress: int = None, step: str = None,
                error: str = None, result: dict = None):
         with self._lock:
@@ -193,11 +153,8 @@ class PipelineJob:
             if result is not None:
                 self.result = result
             self.updated_at = _now()
-<<<<<<< HEAD
         _persist_snapshot(self)
         _sync_template_progress(self)
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
     def to_dict(self) -> dict:
         with self._lock:
@@ -211,11 +168,8 @@ class PipelineJob:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "selections": self.selections,
-<<<<<<< HEAD
                 "language": self.language,
                 "preset": self.preset,
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
             }
 
 
@@ -224,7 +178,6 @@ JOBS_LOCK = threading.Lock()
 
 
 def create_job(user_id: int, selections: dict, idea: str, duration: int,
-<<<<<<< HEAD
                aspect_ratio: str, character_image_url: str | None = None,
                voice: str = "native", use_tts: bool = False, language: str = "vi",
                mode: str = "standard", outfit_image_url: str | None = None,
@@ -239,20 +192,11 @@ def create_job(user_id: int, selections: dict, idea: str, duration: int,
     with JOBS_LOCK:
         JOBS[job_id] = job
     _persist_snapshot(job)
-=======
-               aspect_ratio: str, character_image_url: str | None = None) -> str:
-    job_id = "pipe_" + secrets.token_hex(8)
-    job = PipelineJob(job_id, user_id, selections, idea, duration, aspect_ratio,
-                      character_image_url)
-    with JOBS_LOCK:
-        JOBS[job_id] = job
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     return job_id
 
 
 def get_job(job_id: str) -> PipelineJob | None:
     with JOBS_LOCK:
-<<<<<<< HEAD
         job = JOBS.get(job_id)
     if job:
         return job
@@ -300,9 +244,6 @@ def recover_interrupted_jobs() -> int:
     except Exception as e:
         logger.warning("[pipeline] recover_interrupted_jobs failed: %s", e)
         return 0
-=======
-        return JOBS.get(job_id)
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +251,6 @@ def recover_interrupted_jobs() -> int:
 # ---------------------------------------------------------------------------
 
 def _run_planning(job: PipelineJob) -> dict:
-<<<<<<< HEAD
     """Bước 1: Tạo storyboard bằng model LLM đã chọn (Inkstone hoặc model admin thêm)."""
     job.update(status="planning", progress=10, step="Đang tạo kịch bản...")
     llm_id = job.selections.get("llm", "")
@@ -568,53 +508,12 @@ def _generate_keyframes(job: PipelineJob, plan: dict, creds: dict, reference_pat
         )
         kf = {
             "stt": stt,
-=======
-    """Bước 1: Tạo storyboard bằng VLM local (Qwen2-VL-7B-Instruct)."""
-    job.update(status="planning", progress=10, step="Đang tạo kịch bản...")
-    from .localpipeline.vlm import run_vlm, VLMError
-    from .localpipeline.config import PipelineConfig
-    import os
-    config = PipelineConfig()
-    config.vlm_model_id = job.selections.get("vlm_model_id", "Qwen/Qwen2-VL-7B-Instruct")
-    try:
-        result = run_vlm(str(job.character_image_url) if job.character_image_url else None,
-                        user_instruction=job.idea, config=config)
-        return result
-    except VLMError as e:
-        raise ValueError(f"VLM lỗi: {e}")
-    except Exception as e:
-        raise ValueError(f"Lỗi chạy VLM: {e}")
-
-
-def _run_keyframing(job: PipelineJob, plan: dict) -> list[dict]:
-    """Bước 2: Tạo prompt ảnh cho từng cảnh (keyframe prompts).
-
-    Lưu ý: Model ảnh (image_generate) hiện chỉ dùng để sinh prompt chi tiết.
-    Việc gọi API sinh ảnh thực sự phụ thuộc nhà cung cấp bên ngoài (Qwen-Image,
-    FLUX, v.v.) chưa kết nối vào hệ thống này. Nếu cần, admin có thể kết nối
-    adapter tương ứng.
-    """
-    job.update(status="keyframing", progress=35, step="Đang chuẩn bị ảnh từng cảnh...")
-    scenes = plan["các_cảnh"]
-    character_bible = plan.get("character_bible", {})
-    style_bible = plan.get("style_bible", {})
-
-    keyframes = []
-    for scene in scenes:
-        prompt = vp.gen_keyframe_prompt(
-            scene, character_bible, style_bible,
-            job.character_image_url,
-        )
-        keyframes.append({
-            "stt": scene["stt"],
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
             "thời_lượng_giây": scene["thời_lượng_giây"],
             "loại_shot": scene["loại_shot"],
             "góc_máy": scene["góc_máy"],
             "hành_động": scene["hành_động"],
             "biểu_cảm": scene["biểu_cảm"],
             "thoại": scene["thoại"],
-<<<<<<< HEAD
             "nhân_vật_nói": scene.get("nhân_vật_nói", ""),
             "giai_đoạn": phase,
             "identity_lock": identity_lock,
@@ -623,7 +522,7 @@ def _run_keyframing(job: PipelineJob, plan: dict) -> list[dict]:
             "video_prompt": str(scene.get("video_prompt", "")),
             "product_reference_locked": bool(review_mode and phase),
             "product_reference_url": url_for(outfit_path) if review_mode and outfit_path else "",
-            "character_reference_url": url_for(reference_path) if review_mode and reference_path else "",
+            "character_reference_url": url_for(reference_path) if reference_path else "",
             "tỉ_lệ_khung_hình": scene["tỉ_lệ_khung_hình"],
             "image_url": "",
             "audio_url": "",
@@ -678,28 +577,48 @@ def _run_keyframing(job: PipelineJob, plan: dict) -> list[dict]:
         # TTS: tạo audio cho lời thoại từng cảnh (chỉ khi bật)
         kf["audio_url"] = ""
         dialogue = (scene.get("thoại") or "").strip()
-        if dialogue and job.use_tts and getattr(job, "voice", "") != "native":
+        if dialogue:
             audio_dest = user_outputs_dir(job.user_id) / f"audio_{job.job_id}_{stt}.mp3"
             try:
                 from . import tts as tts_mod
                 import time
-                # Chọn giọng: nếu user để "auto" -> theo giới tính nhân vật đang nói.
                 gender = tts_mod.gender_of_character(
                     (scene.get("nhân_vật_nói") or "").strip(), characters)
-                voice = tts_mod.resolve_voice(job.voice, gender, language=job.language)
+                requested_voice = getattr(job, "voice", "native")
+                if requested_voice == "native":
+                    requested_voice = "auto"
+                voice = tts_mod.resolve_voice(requested_voice, gender, language=job.language)
                 emotion = scene.get("biểu_cảm") or ""
                 rate, pitch, volume = tts_mod.emotion_params(emotion)
-                time.sleep(1)  # tránh rate limit edge-tts
+                time.sleep(1)
                 tts_mod.gen_tts(dialogue, audio_dest, voice=voice, rate=rate, pitch=pitch, volume=volume)
                 kf["audio_url"] = url_for(audio_dest)
                 kf["audio_voice"] = voice
                 kf["audio_emotion"] = emotion or "bình thường"
             except Exception as e:  # noqa: BLE001
-                kf["audio_error"] = _safe_str(e)
+                raise ValueError(f"Không tạo được lời thoại {job.language} cho cảnh {stt}: {_safe_str(e)}") from e
         keyframes.append(kf)
     if job.is_cancelled():
         raise ValueError("Đã dừng bước tạo ảnh bởi người dùng")
     return keyframes
+
+
+def _strip_generated_audio(video_path: Path) -> None:
+    """Drop all audio generated by the video model; only scripted app audio is allowed."""
+    import subprocess
+    if not video_path.is_file():
+        raise ValueError("Không tìm thấy clip để loại bỏ âm thanh AI")
+    tmp = video_path.with_name(video_path.stem + ".silent.tmp.mp4")
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-nostdin", "-loglevel", "error", "-i", str(video_path),
+             "-map", "0:v:0", "-an", "-c:v", "copy", "-movflags", "+faststart", str(tmp)],
+            capture_output=True, text=True, timeout=180)
+        if result.returncode or not tmp.is_file() or tmp.stat().st_size == 0:
+            raise RuntimeError((result.stderr or "ffmpeg không tạo được clip im lặng")[-500:])
+        tmp.replace(video_path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _mux_tts_voiceover(video_path: Path, audio_path: Path, duration: int) -> None:
@@ -722,77 +641,36 @@ def _mux_tts_voiceover(video_path: Path, audio_path: Path, duration: int) -> Non
 
 
 def _scene_video_prompt(job, kf) -> str:
-    """Use the exact finalized image-generation prompt for I2V when available."""
-    # source_image_prompt is captured before image creation and passed verbatim to
-    # the video provider. Do not regenerate/translate/expand it between modalities.
-    scene_prompt = (kf.get("source_image_prompt") or kf.get("image_prompt") or
-                    kf.get("video_prompt") or job.idea)
-    phase = kf.get("giai_đoạn", "") or ""
-    is_product = phase == "chi_tiet_san_pham"
-    if is_product:
-        # Product-only insert: reference-driven, no human/audio generation; CTA is mixed as voiceover separately.
-        scene_prompt = (
-            "Product-only macro close-up of the exact item shown in the provided product reference image. "
-            "No person, mannequin, hands, alternate product, added branding, labels or invented features. "
-            "Preserve the exact visible color, silhouette, neckline, straps/sleeves, seams, pattern and material appearance. "
-            "No speech generated; CTA, if any, is external voiceover only. "
-            "Slow stable camera movement over the item. " + scene_prompt
+    """Ask the video model only to animate the supplied frame; voice/dialogue is added afterward."""
+    motion = (kf.get("hành_động") or "").strip()
+    if not motion:
+        motion = (kf.get("video_prompt") or "").strip()
+    camera = (kf.get("chuyển_động_camera") or "").strip()
+    if camera:
+        motion = f"{motion}; camera: {camera}" if motion else f"camera: {camera}"
+    if motion:
+        motion = f"{motion.rstrip('.')} movement only."
+    else:
+        motion = "Subtle natural movement and a slow, steady camera push-in."
+
+    phase = str(kf.get("giai_đoạn") or "")
+    product_only = phase == "chi_tiet_san_pham"
+    if product_only:
+        lock = (
+            "Animate the supplied product image only. Preserve every visible product detail, "
+            "color, shape, material, pattern, and background exactly. No people, no new objects, "
+            "no redesign, no scene change. Silent video: no speech, dialogue, music, or sound."
         )
     else:
-        lock = kf.get("identity_lock", "")
-        if lock:
-            scene_prompt = f"{lock}. {scene_prompt}"
-        if phase == "bien_hinh":
-            scene_prompt = (
-                f"{scene_prompt} REFERENCE-LOCKED PRODUCT REVEAL: use the exact garment already visible in this scene's keyframe. "
-                "Do not morph, replace, recolor, add/remove details or transform it during the video. "
-                "Use a simple camera move or light reveal only; preserve the same person and garment throughout."
-            )
-        elif phase == "review":
-            scene_prompt = (
-                f"{scene_prompt} PRODUCT CONTINUITY LOCK: use the exact user-supplied product as shown in the keyframe, "
-                "with identical visible design, color, silhouette and details for every frame. No substitution, redesign or spontaneous wardrobe change. "
-                "Keep the same character identity as the character reference."
-            )
-        elif phase == "hook":
-            scene_prompt = (
-                f"{scene_prompt} PRODUCT + IDENTITY LOCK: start already wearing the exact user product from the keyframe. "
-                "Preserve exact face, hair, skin, body and garment design. No original/different outfit and no wardrobe change."
-            )
-        if kf.get("product_reference_locked"):
-            scene_prompt += " The exact product image uploaded by the user is authoritative. Keep that exact garment visible in every character frame; never substitute another garment, even if generated text conflicts."
-        dialogue = (kf.get("thoại") or "").strip()
-        emotion = (kf.get("biểu_cảm") or kf.get("audio_emotion") or "").strip()
-        try:
-            from . import tts as _tts
-            emotion_cue = _tts.emotion_cue_en(emotion)
-        except Exception:
-            emotion_cue = "calm, natural"
-        tts_mode = job.use_tts and getattr(job, "voice", "") != "native"
-        if tts_mode:
-            # External TTS replaces generated audio; ask for silent phoneme-timed mouth articulation, not closed lips.
-            safe_dialogue = dialogue.replace('"', "'")
-            lang_instr = "English" if job.language == "en" else "Vietnamese"
-            scene_prompt = (f"{scene_prompt} SILENT LIP-SYNC PERFORMANCE in {lang_instr}: visibly articulate this exact line "
-                            f"with mouth movements timed to its syllables: '{safe_dialogue}'. "
-                            "Generate absolutely no speech audio, music or vocalization; the matching external voiceover is muxed afterward. "
-                            f"Act with this emotion: {emotion_cue}.")
-        elif dialogue:
-            # Model video (Veo) tự sinh audio — phải nói ĐÚNG câu thoại trong kịch bản,
-            # nếu không nó sẽ bịa lời khác (vd nói salad trong khi cảnh là bún chả).
-            lang_instr = ("The dialogue must be spoken in English."
-                          if job.language == "en" else
-                          "Lời thoại phải nói bằng tiếng Việt.")
-            safe_dialogue = dialogue.replace('"', "'")
-            scene_prompt = (f"DIALOGUE LANGUAGE: {lang_instr} {scene_prompt} "
-                            f"The character says this exact line: \"{safe_dialogue}\" "
-                            f"(lip-sync exactly to this line, no other words; "
-                            f"deliver the line with this emotion: {emotion_cue}).")
-        scene_prompt += " No dialogue: the character does not speak, mouth stays closed, no speech audio."
-
-    # Khách tự edit video, tuyệt đối không có subtitles/captions/on-screen text trong frame.
-    return (f"{scene_prompt} No subtitles, captions, on-screen text, watermarks or graphics in frame. "
-            "The user adds subtitles later in their editor.")
+        lock = (
+            "Use the supplied first frame as the immutable visual source. Preserve the exact same "
+            "person, face, hair, skin tone, body, clothes, product, objects, composition, and "
+            "background throughout. Do not change wardrobe, add or remove objects, cut to another "
+            "scene, or create text. Only animate the described action and camera movement. "
+            "Silent video: no speech, dialogue, music, or sound; the application adds the exact "
+            "scripted Vietnamese/English voice track separately."
+        )
+    return " ".join(part for part in (lock, f"Motion: {motion}", f"Language selected by user: {job.language}.") if part)
 
 
 def _gen_scene_video(job, kf, db, *, ci, total_scenes, video_model_id, model_price,
@@ -806,34 +684,21 @@ def _gen_scene_video(job, kf, db, *, ci, total_scenes, video_model_id, model_pri
     scene_progress = 60 + int(((ci + 0.5) / max(total_scenes, 1)) * 25)
     job.update(progress=scene_progress, step=f"Đang render cảnh {scene_no}/{total_scenes} ({scene_dur}s)...")
     scene_prompt = _scene_video_prompt(job, kf)
-
-    phase = kf.get("giai_đoạn", "") or ""
-    is_product = phase == "chi_tiet_san_pham"
-    review_mode = getattr(job, "mode", "") == "review_outfit"
-    if is_product:
-        scene_prompt += " No speech generated in this product-only scene; narration/CTA is external voiceover only."
-        if review_mode and kf.get("product_reference_locked"):
-            scene_prompt += " PRODUCT REFERENCE OVERRIDES ALL TEXT: maintain the exact garment/product from the uploaded product image unchanged in every frame. Keep the same identity from the character image."
-        elif kf.get("product_reference_locked"):
-            scene_prompt += " Exact product continuity is mandatory: same user-supplied item and design for every frame."
-    elif review_mode and kf.get("product_reference_locked"):
-        scene_prompt += " PRODUCT REFERENCE OVERRIDES ALL TEXT: preserve the exact uploaded garment/product, not a generic equivalent, and the same character identity in every frame."
-    review_mode = getattr(job, "mode", "") == "review_outfit"
-    if is_product:
-        fallback_frame_url = getattr(job, "outfit_image_url", None)
-    else:
-        fallback_frame_url = job.character_image_url
-    first_frame_url = kf.get("image_url") or fallback_frame_url
-    if not first_frame_url:
-        first_frame_url = kf.get("character_reference_url")
-    first_frame = resolve(first_frame_url) if first_frame_url else None
-    review_mode = getattr(job, "mode", "") == "review_outfit"
+    first_frame_url = kf.get("image_url")
+    first_frame = resolve(first_frame_url, job.user_id) if first_frame_url else None
     if first_frame is None:
         raise ValueError(
-            f"Không tìm thấy ảnh keyframe tham chiếu cho cảnh {scene_no}; "
-            "dừng trước khi gọi model video để không tạo video không bám ảnh. "
-            "Hãy tạo lại ảnh cảnh rồi thử lại."
+            f"Không tìm thấy ảnh keyframe cảnh {scene_no}; dừng trước khi gọi API video."
         )
+    phase = str(kf.get("giai_đoạn") or "")
+    product_only = phase == "chi_tiet_san_pham"
+    reference_url = (kf.get("product_reference_url") if product_only else
+                     (kf.get("character_reference_url") or getattr(job, "character_image_url", "")))
+    if not reference_url and product_only:
+        reference_url = getattr(job, "outfit_image_url", "")
+    subject_reference = resolve(reference_url, job.user_id) if reference_url else None
+    if reference_url and subject_reference is None:
+        raise ValueError(f"Không tìm thấy ảnh tham chiếu cảnh {scene_no}; dừng trước khi gọi API video.")
     dest = user_outputs_dir(job.user_id) / f"pipe_{job.job_id}_scene_{ci}.mp4"
     try:
         if video_model_id.startswith("minimax-h3"):
@@ -843,19 +708,21 @@ def _gen_scene_video(job, kf, db, *, ci, total_scenes, video_model_id, model_pri
                 prompt=scene_prompt,
                 dest=dest,
                 first_frame=first_frame,
+                subject_reference=subject_reference,
                 duration=scene_dur,
                 ratio=ratio,
                 resolution=resolution,
             )
         else:
             from . import adminmodels
-            creds = adminmodels.creds(db, video_model_id)   # key nằm trong .env (MODEL_<ID>_API_KEY)
+            creds = adminmodels.creds(db, video_model_id)
             if creds and creds.get("base_url"):
                 ratio = job.aspect_ratio if job.aspect_ratio in minimax.RATIOS else "9:16"
                 minimax.generate(
                     prompt=scene_prompt,
                     dest=dest,
                     first_frame=first_frame,
+                    subject_reference=subject_reference,
                     duration=scene_dur,
                     ratio=ratio,
                     resolution="768P",
@@ -867,15 +734,16 @@ def _gen_scene_video(job, kf, db, *, ci, total_scenes, video_model_id, model_pri
                 raise ValueError(f"Model {video_model_id} chưa được kết nối vào pipeline tự động")
 
         if dest.exists() and dest.stat().st_size > 0:
-            if getattr(job, "use_tts", False) and getattr(job, "voice", "native") != "native":
-                audio_path = resolve(kf.get("audio_url"), job.user_id) if kf.get("audio_url") else None
-                if audio_path is None:
-                    if kf.get("thoại"):
-                        raise ValueError("Đã bật TTS nhưng không tạo được audio cho cảnh này; dừng để tránh trả clip sai giọng/âm thanh.")
-                else:
-                    _mux_tts_voiceover(dest, audio_path, scene_dur)
+            # Model audio is nondeterministic and may hallucinate dialogue/language.
+            # Always remove it; only the exact script-generated track may be muxed in.
+            _strip_generated_audio(dest)
+            audio_path = resolve(kf.get("audio_url"), job.user_id) if kf.get("audio_url") else None
+            if audio_path is not None:
+                _mux_tts_voiceover(dest, audio_path, scene_dur)
+            elif kf.get("thoại"):
+                raise ValueError("Thiếu audio lời thoại theo kịch bản; dừng để tránh trả clip sai ngôn ngữ/nội dung.")
             vurl = url_for(dest)
-            scene_cost = round(model_price, 2)   # 1 clip = 1 request (vilao tính theo request) — không nhân theo giây
+            scene_cost = round(model_price, 2)
         if scene_cost > 0:
             from app import credits
             if not credits.charge(db, job.user_id, scene_cost, kind="spend", reason=f"Gen video cảnh {scene_no}/{total_scenes}", ref_type="pipeline", ref_id=job.job_id):
@@ -887,7 +755,6 @@ def _gen_scene_video(job, kf, db, *, ci, total_scenes, video_model_id, model_pri
         try:
             save_pipeline_template(job, db)
         except Exception:
-            import logging
             logging.warning("[pipeline] save after scene failed")
     except Exception as e:  # noqa: BLE001
         err = _safe_str(e)
@@ -905,36 +772,18 @@ def _run_rendering(job: PipelineJob, keyframes: list[dict], db) -> list[dict]:
     """Bước 3: Gen video. Gom các cảnh liền kề vào cùng 1 request khi tổng thời lượng
     không vượt max_clip_seconds của model — giảm số request lên gateway (tiết kiệm tiền)."""
     job.update(status="rendering", progress=60, step="Đang tạo video...")
-=======
-            "image_prompt": prompt,
-            "tỉ_lệ_khung_hình": scene["tỉ_lệ_khung_hình"],
-            "video_url": "",
-            "status": "pending",
-        })
-    return keyframes
-
-
-def _run_rendering(job: PipelineJob, keyframes: list[dict], db) -> list[dict]:
-    """Bước 3: Gen video từng cảnh bằng model video đã chọn (MiniMax-H3)."""
-    job.update(status="rendering", progress=60, step="Đang tạo video từng cảnh...")
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     video_model_id = job.selections["video_i2v"]
     model = get_model(video_model_id)
     if not model or model.step not in ("video_i2v", "video_t2v"):
         raise ValueError(f"Model {video_model_id} không phải model video")
 
     # Check pricing for this model
-<<<<<<< HEAD
     model_price_key = pricing.video_pricing_key(video_model_id)
-=======
-    model_price_key = f"m.{video_model_id}"
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     model_price = pricing.price(db, model_price_key) if model_price_key in pricing.catalog() else 0.0
 
     total_seconds = job.duration
     per_scene_sec = max(1, total_seconds // max(len(keyframes), 1))
 
-<<<<<<< HEAD
     # KHÔNG trừ credit trước khi gen — chỉ trừ từng chunk gen thành công (xem vòng lặp bên dưới).
     # Trước đây trừ trước toàn bộ: nếu gateway từ chối (vd thiếu số dư) thì mất credit oan.
     job.update(progress=65, step=f"Tạo {len(keyframes)} video riêng cho từng cảnh...")
@@ -1100,128 +949,6 @@ def _save_pipeline_template(job: PipelineJob, db) -> dict | None:
     result["saved_template_id"] = t.id
     job.update(result=result)
     return {"id": t.id, "title": t.title, "base_video_url": t.base_video_url}
-=======
-    # Charge for video rendering
-    video_cost = round(total_seconds * model_price, 2)
-    from app import credits
-    if video_cost > 0:
-        fresh = db.get(__import__("app.models", fromlist=["User"]).User, job.user_id)
-        if not credits.charge(db, job.user_id, video_cost):
-            raise ValueError(f"Không đủ credit để render video (cần {video_cost} credit)")
-        db.commit()
-
-    updated = []
-    for i, kf in enumerate(keyframes):
-        step_progress = 60 + int((i / max(len(keyframes), 1)) * 25)
-        job.update(progress=step_progress, step=f"Đang render cảnh {i + 1}/{len(keyframes)}...")
-
-        prompt = kf["image_prompt"]
-        dur = min(kf["thời_lượng_giây"], model.max_clip_seconds or 10)
-
-        # First frame: dùng ảnh nhân vật nếu có (giữ nhất quán nhân vật)
-        first_frame = job.character_image_url
-
-        try:
-            if video_model_id.startswith("minimax-h3"):
-                # Gọi MiniMax-H3 trực tiếp (blocking, chạy trong luồng nền)
-                dest = settings.outputs_dir / f"pipe_{job.job_id}_scene_{kf['stt']}.mp4"
-                minimax.generate(
-                    prompt=prompt,
-                    dest=dest,
-                    first_frame=resolve(first_frame) if first_frame else None,
-                    duration=dur,
-                    ratio=job.aspect_ratio,
-                    resolution="768P",
-                )
-                kf["video_url"] = url_for(dest)
-            elif video_model_id == "hunyuan-video":
-                # HunyuanVideo (local CLI)
-                from .local_video_adapter import generate_hunyuan_video, LocalVideoError
-                result = generate_hunyuan_video(
-                    prompt=prompt,
-                    duration=dur,
-                    resolution="720P",
-                )
-                kf["video_url"] = result["output_video_url"]
-            elif video_model_id == "hunyuan-video-i2v":
-                # HunyuanVideo-I2V (image-to-video, local CLI)
-                from .local_video_adapter import generate_hunyuan_i2v, LocalVideoError
-                result = generate_hunyuan_i2v(
-                    prompt=prompt,
-                    first_frame_image_url=first_frame,
-                    duration=dur,
-                    resolution="720P",
-                )
-                kf["video_url"] = result["output_video_url"]
-            elif video_model_id == "wan2.1":
-                # Wan2.1 (local CLI)
-                from .local_video_adapter import generate_wan21_video, LocalVideoError
-                result = generate_wan21_video(
-                    prompt=prompt,
-                    duration=dur,
-                    resolution="720P",
-                )
-                kf["video_url"] = result["output_video_url"]
-            else:
-                # Fallback: chưa hỗ trợ pipeline tự động
-                kf["video_url"] = ""
-                kf["error"] = f"Model {video_model_id} chưa được kết nối vào pipeline tự động"
-        except Exception as e:
-            kf["video_url"] = ""
-            kf["error"] = _safe_str(e)
-
-        kf["status"] = "done" if kf.get("video_url") else "failed"
-        updated.append(kf)
-
-    return updated
-
-
-def _run_editing(job: PipelineJob, keyframes: list[dict]) -> str:
-    """Bước 4: Dựng thành phẩm từ các clip (FFmpeg concat)."""
-    job.update(status="editing", progress=90, step="Đang dựng thành phẩm cuối...")
-    video_urls = [kf["video_url"] for kf in keyframes if kf.get("video_url")]
-    if not video_urls:
-        # Collect error messages from failed clips
-        errors = [_safe_str(kf.get("error", "Loi khong ro")) for kf in keyframes if not kf.get("video_url")]
-        error_detail = "; ".join(errors[:3]) if errors else "Khong ro nguyen nhan"
-        raise ValueError("Khong co clip nao de duoc thanh pham. Chi tiet: " + error_detail)
-
-    from app.media import resolve
-    clips = []
-    for url in video_urls:
-        p = resolve(url)
-        if p and p.exists():
-            clips.append(p)
-
-    if not clips:
-        raise ValueError("Không tìm thấy file clip cục bộ để dựng")
-
-    import subprocess
-    import tempfile
-    from pathlib import Path
-
-    settings.outputs_dir.mkdir(parents=True, exist_ok=True)
-    out = settings.outputs_dir / f"pipeline_{job.user_id}_{secrets.token_hex(6)}.mp4"
-
-    concat_file = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            concat_file = Path(f.name)
-            for clip in clips:
-                f.write(f"file '{clip.resolve().as_posix()}'\n")
-
-        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
-               "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-               "-c:a", "aac", "-shortest", str(out)]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if res.returncode != 0:
-            raise RuntimeError(f"FFmpeg lỗi: {res.stderr[-500:]}")
-    finally:
-        if concat_file:
-            concat_file.unlink(missing_ok=True)
-
-    return url_for(out)
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 # ---------------------------------------------------------------------------
@@ -1230,7 +957,6 @@ def _run_editing(job: PipelineJob, keyframes: list[dict]) -> str:
 
 def _run_full_pipeline(job: PipelineJob):
     try:
-<<<<<<< HEAD
         if job.is_cancelled():
             job.update(status="cancelled", step="Đã dừng bởi người dùng")
             if getattr(job, "usage_id", None):
@@ -1380,31 +1106,6 @@ def _run_full_pipeline(job: PipelineJob):
             except Exception:
                 logger.warning("[pipeline] save on failure failed")
 
-=======
-        # Step 1: Planning
-        plan = _run_planning(job)
-        job.update(result={"plan": plan, "keyframes": [], "video_urls": [], "final_url": ""})
-
-        # Step 2: Keyframing
-        keyframes = _run_keyframing(job, plan)
-        job.result["keyframes"] = keyframes
-        job.update(result=job.result, progress=50)
-
-        # Step 3: Rendering
-        with SessionLocal() as db:
-            keyframes = _run_rendering(job, keyframes, db)
-        job.result["keyframes"] = keyframes
-        job.update(result=job.result, progress=85)
-
-        # Step 4: Editing
-        final_url = _run_editing(job, keyframes)
-        job.result["final_url"] = final_url
-        job.update(status="done", progress=100, step="Hoàn tất!", result=job.result)
-
-    except Exception as e:  # noqa: BLE001
-        safe_err = _safe_str(e)
-        job.update(status="failed", error=safe_err, step="Loi: " + safe_err[:200])
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 def start_pipeline(job_id: str):
     """Chạy pipeline trong luồng nền."""
     job = get_job(job_id)
@@ -1412,23 +1113,3 @@ def start_pipeline(job_id: str):
         return
     thread = threading.Thread(target=_run_full_pipeline, args=(job,), daemon=True)
     thread.start()
-<<<<<<< HEAD
-=======
-
-
-# ---------------------------------------------------------------------------
-# Convenience: list available models per step for UI
-# ---------------------------------------------------------------------------
-
-def available_steps() -> dict:
-    from .modelregistry import STEPS
-    out = {}
-    for s in ("llm", "image_generate", "video_i2v"):
-        ms = models_for_step(s)
-        if ms:
-            out[s] = {
-                "label": STEPS.get(s, s),
-                "models": [m.to_dict() for m in ms],
-            }
-    return out
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa

@@ -8,11 +8,7 @@ import tempfile
 from pathlib import Path
 
 from ..config import settings
-<<<<<<< HEAD
 from ..media import resolve, url_for, owner_dir_for_generation
-=======
-from ..media import resolve, url_for
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 from .fast import RenderError
 
 
@@ -27,13 +23,8 @@ def render(gen_id: int, base_video_url: str, values: dict) -> str:
     if not video:
         raise RenderError("Template không có video mẫu để sao chép chuyển động")
 
-<<<<<<< HEAD
     out_root = owner_dir_for_generation(gen_id)
     out_dir = Path(tempfile.mkdtemp(prefix=f"mm_{gen_id}_", dir=out_root))
-=======
-    settings.outputs_dir.mkdir(parents=True, exist_ok=True)
-    out_dir = Path(tempfile.mkdtemp(prefix=f"mm_{gen_id}_", dir=settings.outputs_dir))
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     cfg = out_dir / "config.yaml"
     cfg.write_text(
         f"base_model_path: {settings.mimicmotion_base_model}\n"
@@ -52,10 +43,6 @@ def render(gen_id: int, base_video_url: str, values: dict) -> str:
     results = sorted(out_dir.glob("*.mp4"))
     if proc.returncode != 0 or not results:
         raise RenderError(f"MimicMotion lỗi: {(proc.stderr or proc.stdout)[-800:]}")
-<<<<<<< HEAD
     final = out_root / f"gen_{gen_id}.mp4"
-=======
-    final = settings.outputs_dir / f"gen_{gen_id}.mp4"
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     results[0].replace(final)
     return url_for(final)

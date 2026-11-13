@@ -1,5 +1,4 @@
 import secrets
-<<<<<<< HEAD
 import logging
 from pathlib import Path
 
@@ -19,24 +18,6 @@ from ..models import GenerationHistory, SharedVideoLibrary, User
 
 router = APIRouter(prefix="/api", tags=["templates"])
 logger = logging.getLogger(__name__)
-=======
-from pathlib import Path
-
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
-
-from .. import ai
-from .. import credits, library, pricing
-from ..config import MODEL_CATALOG, settings
-from ..db import get_db
-from ..deps import current_user
-from ..media import resolve, url_for
-from ..models import SharedVideoLibrary, User
-
-router = APIRouter(prefix="/api", tags=["templates"])
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm"}
 MAX_UPLOAD = 200 * 1024 * 1024
@@ -82,13 +63,8 @@ async def upload(file: UploadFile = File(...), user: User = Depends(current_user
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(415, f"Định dạng không hỗ trợ: {ext or '?'}")
-<<<<<<< HEAD
     from ..media import user_uploads_dir
     dest = user_uploads_dir(user.id) / f"{secrets.token_hex(8)}{ext}"
-=======
-    settings.uploads_dir.mkdir(parents=True, exist_ok=True)
-    dest = settings.uploads_dir / f"{user.id}_{secrets.token_hex(8)}{ext}"
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     size = 0
     with dest.open("wb") as f:
         while chunk := await file.read(1024 * 1024):
@@ -138,7 +114,6 @@ def get_template(tid: int, db: Session = Depends(get_db), user: User = Depends(c
     return tpl_out(t)
 
 
-<<<<<<< HEAD
 @router.delete("/templates/{tid}")
 def delete_template(tid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     t = db.get(SharedVideoLibrary, tid)
@@ -155,24 +130,17 @@ def delete_template(tid: int, db: Session = Depends(get_db), user: User = Depend
     return {"ok": True}
 
 
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 # ---- AI helpers (free, no credit charge) ----
 class ScriptIn(BaseModel):
     topic: str = Field(min_length=1, max_length=2000)
     tone: str = "hấp dẫn"
     seconds: int = Field(default=15, ge=5, le=120)
-<<<<<<< HEAD
     model: str = ""
-=======
-    model: str = ai.DEFAULT_SCRIPT_MODEL
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 class AnalyzeIn(BaseModel):
     image_url: str
     question: str = "Mô tả nội dung hình ảnh này để làm kịch bản video."
-<<<<<<< HEAD
     model: str = ""
 
 
@@ -185,38 +153,17 @@ def _bill_model(db: Session, user: User, model: str, feature_key: str = "library
     from .. import featurebilling
     return featurebilling.reserve(db, user.id, feature_key, model_id=model,
                                   model_cost=p)
-=======
-    model: str = ai.DEFAULT_VISION_MODEL
-
-
-def _bill_model(db: Session, user: User, model: str) -> float:
-    """Charge the price of the model the user picked (0 = free). Refused if the admin switched it off."""
-    if pricing.ai_key(model) not in pricing.catalog():
-        return 0.0                                  # unknown id: the AI layer will reject it, nothing to charge
-    if not pricing.enabled(db, pricing.ai_key(model)):
-        raise HTTPException(403, f"Model {model} đang được admin tạm tắt")
-    p = pricing.price(db, pricing.ai_key(model))
-    if p > 0 and not credits.charge(db, user.id, p):
-        db.rollback()
-        raise HTTPException(402, detail={"message": "Không đủ credit, vui lòng nạp thêm", "required": p})
-    db.commit()
-    return p
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 def _refund_model(db: Session, user: User, amount: float) -> None:
     if amount > 0:
-<<<<<<< HEAD
         from .. import credits
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         credits.add_credits(db, user.id, amount)
         db.commit()
 
 
 @router.get("/ai/models")
 def ai_models(db: Session = Depends(get_db), user: User = Depends(current_user)):
-<<<<<<< HEAD
     from ..modelregistry import all_models
     snap = pricing.snapshot(db)
     models = []
@@ -228,20 +175,10 @@ def ai_models(db: Session = Depends(get_db), user: User = Depends(current_user))
         enabled = (row.enabled if row is not None else True) and m.enabled
         models.append({**m.to_dict(), "price": p, "enabled": enabled})
     return {"models": models, "configured": bool(settings.vilao_api_key or settings.minimax_api_key)}
-=======
-    snap = pricing.snapshot(db)
-    models = [{**m, "price": snap[pricing.ai_key(m["id"])].price if pricing.ai_key(m["id"]) in snap else 0,
-               "enabled": snap[pricing.ai_key(m["id"])].enabled if pricing.ai_key(m["id"]) in snap else True}
-              for m in MODEL_CATALOG]
-    return {"models": models, "default_vision": ai.DEFAULT_VISION_MODEL,
-            "default_script": ai.DEFAULT_SCRIPT_MODEL, "decision": ai.DECISION_MODEL,
-            "configured": ai.configured()}
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 @router.post("/ai/script")
 def ai_script(body: ScriptIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
-<<<<<<< HEAD
     from ..modelregistry import get_model as gm
     spec = gm(body.model)
     if spec is None:
@@ -270,16 +207,6 @@ def ai_script(body: ScriptIn, db: Session = Depends(get_db), user: User = Depend
         featurebilling.finish(db, usage.id, success=False)
         logger.exception("[library-script] generation failed")
         raise HTTPException(502, "Không tạo được kịch bản. Vui lòng thử lại sau.") from e
-=======
-    paid = _bill_model(db, user, body.model)
-    try:
-        text, used = ai.generate_script_ex(body.topic, tone=body.tone, seconds=body.seconds, model=body.model,
-                                           disabled=frozenset(pricing.disabled_models(db)))
-        return {"script": text, "model_used": used, "credits_charged": paid}
-    except ai.AIError as e:
-        _refund_model(db, user, paid)               # no answer, no charge
-        raise HTTPException(502, str(e))
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 @router.post("/ai/analyze")
@@ -287,7 +214,6 @@ def ai_analyze(body: AnalyzeIn, db: Session = Depends(get_db), user: User = Depe
     p = resolve(body.image_url)
     if not p:
         raise HTTPException(404, "Ảnh chưa được upload")
-<<<<<<< HEAD
     from ..modelregistry import get_model as gm
     spec = gm(body.model) if body.model else None
     if body.model and spec is None:
@@ -327,13 +253,3 @@ def ai_analyze(body: AnalyzeIn, db: Session = Depends(get_db), user: User = Depe
             featurebilling.finish(db, usage.id, success=False)
         logger.exception("[library-analyze] model call failed")
         raise HTTPException(502, "Không phân tích được ảnh. Vui lòng thử lại.") from e
-=======
-    paid = _bill_model(db, user, body.model)
-    try:
-        text, used = ai.analyze_image_ex(p, body.question, body.model,
-                                         disabled=frozenset(pricing.disabled_models(db)))
-        return {"analysis": text, "model_used": used, "credits_charged": paid}
-    except ai.AIError as e:
-        _refund_model(db, user, paid)
-        raise HTTPException(502, str(e))
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa

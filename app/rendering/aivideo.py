@@ -2,17 +2,10 @@
 import subprocess
 from pathlib import Path
 
-<<<<<<< HEAD
 from .. import ai, minimax
 from ..config import settings
 from ..db import SessionLocal
 from ..media import resolve, url_for, owner_dir_for_generation
-=======
-from .. import ai, minimax, pricing
-from ..config import DEFAULT_SCRIPT_MODEL, settings
-from ..db import SessionLocal
-from ..media import resolve, url_for
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 from .fast import RenderError
 
 DANCE_MAX_SECONDS = 10
@@ -25,17 +18,10 @@ def _opts(values: dict) -> dict:
 
 def generate(gen_id: int, values: dict, *, dance: bool, on_progress=lambda: None) -> str:
     """Create the video with MiniMax-H3. dance=True makes a reference clip (outputs/ref_<id>.mp4)."""
-<<<<<<< HEAD
     dest = owner_dir_for_generation(gen_id) / (f"ref_{gen_id}.mp4" if dance else f"gen_{gen_id}.mp4")
     first = resolve(values.get("first_frame_image", "")) if not dance else None
     with SessionLocal() as db:
         allow_llm = bool(settings.vilao_api_key)
-=======
-    dest = settings.outputs_dir / (f"ref_{gen_id}.mp4" if dance else f"gen_{gen_id}.mp4")
-    first = resolve(values.get("first_frame_image", "")) if not dance else None
-    with SessionLocal() as db:
-        allow_llm = DEFAULT_SCRIPT_MODEL not in pricing.disabled_models(db)
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     prompt = ai.optimize_video_prompt(values.get("prompt", ""), dance=dance, allow_llm=allow_llm)
     try:
         minimax.generate(prompt, dest, first_frame=first, on_progress=on_progress, **_opts(values))

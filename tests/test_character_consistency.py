@@ -63,7 +63,7 @@ def test_keyframes_share_character_reference(monkeypatch):
     monkeypatch.setattr(autopipeline.adminmodels, "creds",
                         lambda _db, model_id: {"base_url": "https://api.test", "api_key": "k",
                                                "model_name": model_id})
-    monkeypatch.setattr(autopipeline, "resolve", lambda _url: None)
+    monkeypatch.setattr(autopipeline, "resolve", lambda _url, *_args: None)
     monkeypatch.setattr(autopipeline.pricing, "catalog", lambda: {})
 
     keyframes = autopipeline._run_keyframing(FakeJob(), _plan(), FakeDB())
@@ -76,7 +76,37 @@ def test_keyframes_share_character_reference(monkeypatch):
     assert keyframes[1]["character_reference_url"]
 
 
-def test_keyframing_fails_when_no_reference_can_be_made(monkeypatch):
+def test_keyframes_generate_scripted_tts_even_when_voice_setting_is_native(monkeypatch):
+    generated = []
+
+    def fake_image(_prompt, dest, **_kwargs):
+        Path(dest).write_bytes(b"\x89PNG\r\n\x1a\n")
+        return dest
+
+    def fake_tts(text, dest, **kwargs):
+        generated.append((text, kwargs.get("voice")))
+        Path(dest).write_bytes(b"audio-bytes" * 32)
+        return Path(dest)
+
+    monkeypatch.setattr(autopipeline.vilao_image, "gen_image", fake_image)
+    monkeypatch.setattr(autopipeline.adminmodels, "creds",
+                        lambda _db, model_id: {"base_url": "https://api.test", "api_key": "k",
+                                               "model_name": model_id})
+    monkeypatch.setattr(autopipeline, "resolve", lambda _url, *_args: None)
+    monkeypatch.setattr(autopipeline.pricing, "catalog", lambda: {})
+    monkeypatch.setattr("app.tts.gen_tts", fake_tts)
+    monkeypatch.setattr("time.sleep", lambda *_args: None)
+
+    job = FakeJob()
+    job.language = "vi"
+    job.voice = "native"
+    keyframes = autopipeline._run_keyframing(job, _plan(), FakeDB())
+
+    assert [item[0] for item in generated] == ["xin chào", "xin chào nữa"]
+    assert all(voice.startswith("vi-VN-") for _, voice in generated)
+    assert all(kf["audio_url"] for kf in keyframes)
+
+
     def failing_gen_image(*_args, **_kwargs):
         raise autopipeline.vilao_image.ImageError("gateway down")
 
@@ -84,7 +114,7 @@ def test_keyframing_fails_when_no_reference_can_be_made(monkeypatch):
     monkeypatch.setattr(autopipeline.adminmodels, "creds",
                         lambda _db, model_id: {"base_url": "https://api.test", "api_key": "k",
                                                "model_name": model_id})
-    monkeypatch.setattr(autopipeline, "resolve", lambda _url: None)
+    monkeypatch.setattr(autopipeline, "resolve", lambda _url, *_args: None)
     monkeypatch.setattr(autopipeline.pricing, "catalog", lambda: {})
 
     try:
@@ -101,20 +131,26 @@ def test_rendering_uses_per_chunk_first_frame(monkeypatch):
     captured = []
 
     def fake_generate(prompt, dest, **kwargs):
-        captured.append({"first_frame": kwargs.get("first_frame"), "prompt": prompt})
+        captured.append({"first_frame": kwargs.get("first_frame"),
+                         "subject_reference": kwargs.get("subject_reference"),
+                         "prompt": prompt})
         Path(dest).write_bytes(b"\x00" * 2048)
         return Path(dest)
 
     monkeypatch.setattr(autopipeline.minimax, "generate", fake_generate)
-    monkeypatch.setattr(autopipeline, "resolve", lambda u: Path(u) if u else None)
+    monkeypatch.setattr(autopipeline, "resolve", lambda u, *_args: Path(u) if u else None)
     monkeypatch.setattr(autopipeline, "get_model", lambda _mid: FakeModel())
     monkeypatch.setattr(autopipeline.pricing, "catalog", lambda: {})
 
     keyframes = [
         {"stt": 1, "thời_lượng_giây": 4, "image_url": "/media/outputs/k1.png",
-         "identity_lock": "LOCK", "video_prompt": "scene one", "thoại": "Xin chào mọi người"},
+         "character_reference_url": "/media/uploads/char.png",
+         "source_image_prompt": "EXACT image prompt one", "identity_lock": "LOCK",
+         "video_prompt": "different video prompt", "thoại": "Xin chào mọi người"},
         {"stt": 2, "thời_lượng_giây": 4, "image_url": "/media/outputs/k2.png",
-         "identity_lock": "LOCK", "video_prompt": "scene two", "thoại": "Hôm nay mình nấu bún chả"},
+         "character_reference_url": "/media/uploads/char.png",
+         "source_image_prompt": "EXACT image prompt two", "identity_lock": "LOCK",
+         "video_prompt": "another video prompt", "thoại": "Hôm nay mình nấu bún chả"},
     ]
     job = FakeJob()
     autopipeline._run_rendering(job, keyframes, FakeDB())
@@ -122,16 +158,20 @@ def test_rendering_uses_per_chunk_first_frame(monkeypatch):
     assert len(captured) == 2
     assert captured[0]["first_frame"] == Path("/media/outputs/k1.png")
     assert captured[1]["first_frame"] == Path("/media/outputs/k2.png")
-    # Câu thoại của kịch bản phải nằm trong prompt video (Veo nói đúng lời kịch bản)
-    assert "tiếng Việt" in captured[0]["prompt"]
-    assert "Xin chào mọi người" in captured[0]["prompt"]
-    assert "IDENTITY LOCK" in captured[0]["prompt"] or "LOCK" in captured[0]["prompt"]
+    assert captured[0]["subject_reference"] == Path("/media/uploads/char.png")
+    assert captured[1]["subject_reference"] == Path("/media/uploads/char.png")
+    assert "Use the supplied first frame as the immutable visual source" in captured[0]["prompt"]
+    assert "Use the supplied first frame as the immutable visual source" in captured[1]["prompt"]
+    assert "different video prompt movement only." in captured[0]["prompt"]
+    assert "another video prompt movement only." in captured[1]["prompt"]
+    assert "Silent video" in captured[0]["prompt"]
+    assert "Language selected by user: vi" in captured[0]["prompt"]
 
 
 def test_rendering_fails_closed_when_keyframe_missing(monkeypatch):
     called = []
     monkeypatch.setattr(autopipeline.minimax, "generate", lambda *a, **k: called.append(True))
-    monkeypatch.setattr(autopipeline, "resolve", lambda _url: None)
+    monkeypatch.setattr(autopipeline, "resolve", lambda _url, *_args: None)
     monkeypatch.setattr(autopipeline, "get_model", lambda _mid: FakeModel())
     monkeypatch.setattr(autopipeline.pricing, "catalog", lambda: {})
     with __import__("pytest").raises(ValueError, match="Không tìm thấy ảnh keyframe"):
@@ -151,16 +191,21 @@ def test_rendering_english_dialogue_instruction(monkeypatch):
         return Path(dest)
 
     monkeypatch.setattr(autopipeline.minimax, "generate", fake_generate)
-    monkeypatch.setattr(autopipeline, "resolve", lambda u: Path(u) if u else None)
+    monkeypatch.setattr(autopipeline, "resolve", lambda u, *_args: Path(u) if u else None)
+    monkeypatch.setattr(autopipeline, "_mux_tts_voiceover", lambda video, audio, duration: captured.append({"mux": (audio, duration)}))
+    monkeypatch.setattr(autopipeline, "_strip_generated_audio", lambda video: captured.append({"stripped": Path(video)}))
     monkeypatch.setattr(autopipeline, "get_model", lambda _mid: FakeModel())
     monkeypatch.setattr(autopipeline.pricing, "catalog", lambda: {})
 
     keyframes = [{"stt": 1, "thời_lượng_giây": 4, "image_url": "/media/outputs/k1.png",
-                  "identity_lock": "LOCK", "video_prompt": "scene one",
-                  "thoại": "Today I cook bun cha"}]
+                  "audio_url": "/media/outputs/audio.mp3", "character_reference_url": "/media/uploads/char.png",
+                  "source_image_prompt": "exact image prompt", "identity_lock": "LOCK",
+                  "video_prompt": "slow camera pan", "thoại": "Today I cook bun cha"}]
     job = FakeJob()
     job.language = "en"
     autopipeline._run_rendering(job, keyframes, FakeDB())
 
-    assert "spoken in English" in captured[0]["prompt"]
-    assert "Today I cook bun cha" in captured[0]["prompt"]
+    assert "slow camera pan movement only." in captured[0]["prompt"]
+    assert "Silent video" in captured[0]["prompt"]
+    assert any("stripped" in item for item in captured)
+    assert any("mux" in item for item in captured)

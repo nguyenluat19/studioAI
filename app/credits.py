@@ -4,18 +4,13 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-<<<<<<< HEAD
 from .models import CreditAdjustment, CreditLedgerEntry, GenerationHistory, Transaction, User
-=======
-from .models import CreditAdjustment, GenerationHistory, Transaction, User
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-<<<<<<< HEAD
 def _record_ledger(db: Session, user_id: int, kind: str, amount: float, reason: str,
                    ref_type: str = "", ref_id: int | str | None = None) -> None:
     bal = db.scalar(select(User.credits_balance).where(User.id == user_id))
@@ -28,9 +23,6 @@ def _record_ledger(db: Session, user_id: int, kind: str, amount: float, reason: 
 
 def charge(db: Session, user_id: int, cost: float, *, kind: str = "spend",
            reason: str = "Chi tiêu credit", ref_type: str = "", ref_id: int | str | None = None) -> bool:
-=======
-def charge(db: Session, user_id: int, cost: float) -> bool:
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     """Deduct `cost` iff balance suffices. Returns False when credits are insufficient."""
     if cost <= 0:
         return True
@@ -39,7 +31,6 @@ def charge(db: Session, user_id: int, cost: float) -> bool:
         .where(User.id == user_id, User.credits_balance >= cost)
         .values(credits_balance=User.credits_balance - cost)
     )
-<<<<<<< HEAD
     if res.rowcount != 1:
         return False
     _record_ledger(db, user_id, kind, -float(cost), reason, ref_type, ref_id)
@@ -53,14 +44,6 @@ def add_credits(db: Session, user_id: int, amount: float, *, kind: str = "topup"
     db.execute(update(User).where(User.id == user_id)
                .values(credits_balance=User.credits_balance + amount))
     _record_ledger(db, user_id, kind, float(amount), reason, ref_type, ref_id)
-=======
-    return res.rowcount == 1
-
-
-def add_credits(db: Session, user_id: int, amount: float) -> None:
-    db.execute(update(User).where(User.id == user_id)
-               .values(credits_balance=User.credits_balance + amount))
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 def adjust(db: Session, user_id: int, amount: float, admin_id: int | None, reason: str = "") -> float | None:
@@ -74,10 +57,7 @@ def adjust(db: Session, user_id: int, amount: float, admin_id: int | None, reaso
     bal = round(db.scalar(select(User.credits_balance).where(User.id == user_id)), 2)
     db.add(CreditAdjustment(user_id=user_id, admin_id=admin_id, amount=amount, balance_after=bal,
                             reason=reason.strip()[:200]))
-<<<<<<< HEAD
     _record_ledger(db, user_id, "adjustment", float(amount), reason or "Điều chỉnh credit", "admin", admin_id)
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     db.commit()
     return bal
 
@@ -123,11 +103,7 @@ def fail_and_refund(db: Session, gen_id: int, message: str) -> bool:
     if res.rowcount != 1:
         db.rollback()
         return False
-<<<<<<< HEAD
     add_credits(db, gen.user_id, gen.credits_cost, kind="refund", reason=message or "Hoàn credit", ref_type="generation", ref_id=gen_id)
-=======
-    add_credits(db, gen.user_id, gen.credits_cost)
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     db.commit()
     return True
 
@@ -143,11 +119,7 @@ def settle_topup(db: Session, tx_id: int, allow_from: tuple[str, ...] = ("pendin
     if res.rowcount != 1:
         db.rollback()
         return False
-<<<<<<< HEAD
     add_credits(db, tx.user_id, tx.credits_added, kind="topup",
                 reason=f"Nạp {int(tx.amount_vnd):,}đ ({tx.transaction_code})", ref_type="transaction", ref_id=tx_id)
-=======
-    add_credits(db, tx.user_id, tx.credits_added)
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     db.commit()
     return True

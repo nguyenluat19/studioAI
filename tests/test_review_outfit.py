@@ -259,56 +259,72 @@ def test_rendering_product_scene_has_no_identity(monkeypatch):
     captured = []
 
     def fake_generate(prompt, dest, **kwargs):
-        captured.append({"prompt": prompt, "first_frame": kwargs.get("first_frame")})
+        captured.append({"prompt": prompt, "first_frame": kwargs.get("first_frame"),
+                         "subject_reference": kwargs.get("subject_reference")})
         Path(dest).write_bytes(b"\x00")
         return Path(dest)
 
     monkeypatch.setattr(autopipeline.minimax, "generate", fake_generate)
-    monkeypatch.setattr(autopipeline, "resolve", lambda u: Path(u) if u else None)
+    monkeypatch.setattr(autopipeline, "resolve", lambda u, *_args: Path(u) if u else None)
     monkeypatch.setattr(autopipeline, "get_model", lambda _mid: FakeVideoModel())
     monkeypatch.setattr(autopipeline.pricing, "catalog", lambda: {})
 
     keyframes = [
         {"stt": 1, "thời_lượng_giây": 4, "giai_đoạn": "review", "image_url": "/media/outputs/k1.png",
+         "character_reference_url": "/media/uploads/c.png", "product_reference_url": "/media/uploads/o.png",
          "identity_lock": "IDENTITY LOCK: keep face", "video_prompt": "scene one", "thoại": "đẹp",
          "product_reference_locked": True},
         {"stt": 2, "thời_lượng_giây": 4, "giai_đoạn": "chi_tiet_san_pham",
-         "image_url": "/media/outputs/k2.png", "identity_lock": "IDENTITY LOCK: keep face",
+         "image_url": "/media/outputs/k2.png", "product_reference_url": "/media/uploads/o.png",
+         "identity_lock": "IDENTITY LOCK: keep face",
          "video_prompt": "fabric detail", "thoại": ""},
     ]
     job = FakeJob("/media/uploads/c.png", "/media/uploads/o.png")
     autopipeline._run_rendering(job, keyframes, FakeDB())
 
     assert "IDENTITY LOCK" not in captured[1]["prompt"]
-    assert "Product-only macro close-up" in captured[1]["prompt"]
-    assert "No person" in captured[1]["prompt"]
+    assert "Animate the supplied product image only" in captured[1]["prompt"]
+    assert "fabric detail movement only." in captured[1]["prompt"]
     assert captured[1]["first_frame"] == Path("/media/outputs/k2.png")
-    assert "PRODUCT CONTINUITY LOCK" in captured[0]["prompt"]
-    assert "PRODUCT REFERENCE OVERRIDES ALL TEXT" in captured[0]["prompt"]
+    assert captured[0]["subject_reference"] == Path("/media/uploads/c.png")
+    assert captured[1]["subject_reference"] == Path("/media/uploads/o.png")
+    assert "Preserve the exact same person" in captured[0]["prompt"]
+    assert "Animate the supplied product image only" in captured[1]["prompt"]
+    assert "scene one movement only." in captured[0]["prompt"]
+    assert "fabric detail movement only." in captured[1]["prompt"]
+    assert captured[0]["subject_reference"] != captured[1]["subject_reference"]
 
 
 def test_scene_video_prompt_locks_exact_product_and_mouth_audio_modes():
     job = FakeJob("/media/uploads/c.png", "/media/uploads/o.png")
-    kf = {"giai_đoạn": "review", "video_prompt": "woman models outfit", "identity_lock": "IDENTITY LOCK",
-          "thoại": "Áo này rất đẹp", "biểu_cảm": "vui vẻ"}
+    kf = {"giai_đoạn": "review", "source_image_prompt": "exact image prompt",
+          "video_prompt": "different video prompt", "thoại": "Áo này rất đẹp",
+          "character_reference_url": "/media/uploads/c.png", "product_reference_locked": True}
     prompt = autopipeline._scene_video_prompt(job, kf)
-    assert "PRODUCT CONTINUITY LOCK" in prompt
-    assert "exact line" in prompt
-    assert "Áo này rất đẹp" in prompt
+    assert prompt.startswith("Use the supplied first frame as the immutable visual source")
+    assert "Preserve the exact same person" in prompt
+    assert "product, objects, composition, and background" in prompt
+    assert "different video prompt movement only." in prompt
 
     job.use_tts = True
     job.voice = "vi-VN-HoaiMyNeural"
-    tts_prompt = autopipeline._scene_video_prompt(job, kf)
-    assert "SILENT LIP-SYNC PERFORMANCE" in tts_prompt
-    assert "Áo này rất đẹp" in tts_prompt
-    assert "mouth stays closed" not in tts_prompt
-    assert "absolutely no speech audio" in tts_prompt
+    assert autopipeline._scene_video_prompt(job, kf) == prompt
 
-    product_kf = {"giai_đoạn": "chi_tiet_san_pham", "video_prompt": "macro product", "thoại": "Mua ngay"}
+    product_kf = {"giai_đoạn": "chi_tiet_san_pham", "source_image_prompt": "product image prompt"}
     product_prompt = autopipeline._scene_video_prompt(job, product_kf)
-    assert "No person" in product_prompt
-    assert "No speech generated" in product_prompt
-    assert "CTA, if any, is external voiceover only" in product_prompt
+    assert "Animate the supplied product image only" in product_prompt
+    assert "Subtle natural movement" in product_prompt
+    assert "Language selected by user: vi" in product_prompt
+
+
+def test_scene_video_prompt_uses_video_motion_prompt_first():
+    job = FakeJob("", "")
+    prompt = autopipeline._scene_video_prompt(job, {
+        "source_image_prompt": "static image description",
+        "video_prompt": "camera slowly tracks as the subject turns",
+    })
+    assert "camera slowly tracks as the subject turns movement only." in prompt
+    assert "Use the supplied first frame as the immutable visual source" in prompt
 
 
 def test_tts_mux_maps_only_external_audio(monkeypatch, tmp_path):

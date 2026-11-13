@@ -7,7 +7,6 @@ bcrypt>=4.0
 PyJWT>=2.8
 httpx>=0.27
 python-multipart>=0.0.9
-<<<<<<< HEAD
 alembic>=1.13
 Pillow>=10.0
 yt-dlp
@@ -15,9 +14,4 @@ faster-whisper>=1.0.0
 edge-tts>=6.1.0
 numpy>=1.26
 psutil>=5.9
-=======
 pytest>=8.0
-alembic>=1.13
-Pillow>=10.0
-yt-dlp
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa

@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-<<<<<<< HEAD
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,20 +17,6 @@ from .migrate import upgrade_db
 from .models import SharedVideoLibrary, User
 from .routers import admin, assistant, auth, billing, chat, generate, templates, videotools
 from . import featurebilling as featurebilling_mod
-=======
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
-
-from .config import settings
-from .db import SessionLocal
-from .maintenance import Sweeper
-from . import pricing
-from .migrate import upgrade_db
-from .models import SharedVideoLibrary, User
-from .routers import admin, assistant, auth, billing, generate, templates, videotools
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 from .security import hash_password
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
@@ -81,7 +66,6 @@ def init() -> None:
                         password_hash=hash_password(settings.admin_password), role="admin"))
             db.commit()
         pricing.seed(db)
-<<<<<<< HEAD
         featurebilling_mod.seed(db)
         from . import adminmodels
         adminmodels.sync(db)
@@ -89,9 +73,6 @@ def init() -> None:
         seed_ai_templates(db)
         from . import autopipeline
         autopipeline.recover_interrupted_jobs()   # job dở khi restart -> đánh failed để user thấy
-=======
-        seed_ai_templates(db)
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 @asynccontextmanager
@@ -103,7 +84,6 @@ async def lifespan(_: FastAPI):
     sweeper.stop()
 
 
-<<<<<<< HEAD
 # docs_url=None: /docs là trang TÀI LIỆU của sản phẩm (nay chuyển về /#docs);
 # nếu để mặc định, FastAPI gắn Swagger UI vào /docs và người dùng thấy giao diện API.
 app = FastAPI(title="Video Template SaaS", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -112,20 +92,11 @@ for r in (auth, templates, generate, billing, admin, assistant, videotools, chat
 
 # Mount only uploads/outputs/voices — never the storage root (it holds the SQLite DB).
 for _d in (settings.uploads_dir, settings.outputs_dir, settings.voices_dir):
-=======
-app = FastAPI(title="Video Template SaaS", lifespan=lifespan)
-for r in (auth, templates, generate, billing, admin, assistant, videotools):
-    app.include_router(r.router)
-
-# Mount only uploads/outputs — never the storage root (it holds the SQLite DB).
-for _d in (settings.uploads_dir, settings.outputs_dir):
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     _d.mkdir(parents=True, exist_ok=True)
     app.mount(f"/media/{_d.name}", StaticFiles(directory=_d), name=f"media-{_d.name}")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
-<<<<<<< HEAD
 @app.get("/", include_in_schema=False, response_class=HTMLResponse)
 def index(db: Session = Depends(get_db)):
     """Trang chủ công khai (landing + nav). Tool nằm ở /dashboard."""
@@ -179,13 +150,6 @@ for _slug in legal.all_routes():
                       include_in_schema=False, response_class=HTMLResponse)
 
 
-=======
-@app.get("/")
-def index():
-    return FileResponse(STATIC / "index.html")
-
-
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 @app.get("/api/health")
 def health():
     return {"ok": True}

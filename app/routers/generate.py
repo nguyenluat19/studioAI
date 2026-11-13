@@ -143,17 +143,9 @@ def gen_out(g: GenerationHistory) -> dict:
             "error_message": g.error_message, "created_at": g.created_at}
 
 
-<<<<<<< HEAD
 def _create_and_dispatch(body: GenerateIn, bg: BackgroundTasks, p: Prepared, db: Session):
     # The guard's check is advisory; the guarded UPDATE is what prevents overdraft under concurrency.
     if not credits.charge(db, p.user.id, p.cost, kind="spend", reason=f"Render video ({p.render_type})", ref_type="generation", ref_id=p.template.id):
-=======
-@router.post("/generate")
-def generate(body: GenerateIn, bg: BackgroundTasks, p: Prepared = Depends(credit_guard),
-             db: Session = Depends(get_db)):
-    # The guard's check is advisory; the guarded UPDATE is what prevents overdraft under concurrency.
-    if not credits.charge(db, p.user.id, p.cost):
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
         db.rollback()
         raise HTTPException(402, detail={"message": "Không đủ credit, vui lòng nạp thêm", "required": p.cost})
     title = body.title.strip() or f"Tác phẩm #{p.template.id}"
@@ -188,15 +180,12 @@ def generate(body: GenerateIn, bg: BackgroundTasks, p: Prepared = Depends(credit
     return gen_out(gen)
 
 
-<<<<<<< HEAD
 @router.post("/generate")
 def generate(body: GenerateIn, bg: BackgroundTasks, p: Prepared = Depends(credit_guard),
              db: Session = Depends(get_db)):
     return _create_and_dispatch(body, bg, p, db)
 
 
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 @router.get("/pricing")
 def get_pricing(db: Session = Depends(get_db), user: User = Depends(current_user)):
     """Credit prices so the UI can show a cost before the user presses Generate."""
@@ -217,7 +206,6 @@ def history(category: str | None = None, db: Session = Depends(get_db), user: Us
     if category and category.strip():
         q = q.where(GenerationHistory.user_category == category.strip())
     q = q.order_by(GenerationHistory.id.desc()).limit(100)
-<<<<<<< HEAD
     gens = list(db.scalars(q))
     tpl_ids = {g.template_id for g in gens}
     ratios = {}
@@ -233,9 +221,6 @@ def history(category: str | None = None, db: Session = Depends(get_db), user: Us
         d["aspect_ratio"] = ratios.get(g.template_id, "9:16")
         out.append(d)
     return out
-=======
-    return [gen_out(g) for g in db.scalars(q)]
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 
 @router.get("/generations/categories")
@@ -267,7 +252,6 @@ def update_generation(gid: int, body: UpdateGenerationIn, db: Session = Depends(
     return gen_out(g)
 
 
-<<<<<<< HEAD
 @router.delete("/generations/{gid}")
 def delete_generation(gid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     g = db.get(GenerationHistory, gid)
@@ -280,15 +264,12 @@ def delete_generation(gid: int, db: Session = Depends(get_db), user: User = Depe
     return {"ok": True}
 
 
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 @router.get("/generations/{gid}")
 def get_generation(gid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     g = db.get(GenerationHistory, gid)
     if not g or (g.user_id != user.id and user.role != "admin"):
         raise HTTPException(404, "Không tìm thấy")
     return gen_out(g)
-<<<<<<< HEAD
 
 
 class ReuseGenerationIn(BaseModel):
@@ -319,5 +300,3 @@ def reuse_generation(gid: int, bg: BackgroundTasks, body: ReuseGenerationIn | No
     )
     p = credit_guard(payload, user, db)
     return _create_and_dispatch(payload, bg, p, db)
-=======
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa

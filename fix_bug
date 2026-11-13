@@ -1,1199 +1,283 @@
-# 🔍 BÁO CÁO QUÉT DỰ ÁN & TÌNH TRẠNG BUG — VideoAI Dashboard
+# 🚨 BÁO CÁO: BUG NHÂN VẬT / SẢN PHẨM KHÔNG NHẤT QUÁN TRONG VIDEO
 
-> **2026-11-11: ĐÃ PUBLISH PRODUCTION** → <https://studioai.id.vn> (Cloudflare Tunnel + Docker Compose trên máy nhà). Chi tiết đầy đủ ở **mục 8** (cuối file).
->
-> **PHIÊN 2026-11-11 — ĐÃ LÀM (tóm tắt đầu file):**
-> 1. **Publish app lên domain công khai:** `studioai.id.vn` (đăng ký qua iNET — panel OnePortal). DNS: đổi NS `laocai/sapa.vclouddns.com` → `celine/jimmy.ns.cloudflare.com` (zone thêm ở dash.cloudflare.com, gói Free, Full setup, subdomain OK).
-> 2. **HTTPS:** Universal SSL lần đầu **Pending Validation (TXT)** vì Cloudflare không xác thực được qua HTTP (`/.well-known/pki-validation/...` trả 404 qua tunnel) → thêm **2 bản ghi TXT `_acme-challenge`** → cert Active. Mode **Full**. Custom cert chỉ có ở Business+.
-> 3. **Tunnel named `studioai`** (locally-managed, `f7f7c1c2-6ca7-409a-ac55-b04d916ac7c0`) → ingress `studioai.id.vn → http://127.0.0.1:8001`; DNS record CNAME `studioai.id.vn → <uuid>.cfargotunnel.com` (Proxied); 2 TXT `_acme-challenge` giữ lại để renew cert.
-> 4. **App chạy Docker Compose** (`docker-compose.yml` sửa: web bind `127.0.0.1:8001`, healthcheck `/api/health`, mount `./storage` + **`./.env:/app/.env`** để kênh ghi `MODEL_*_API_KEY` của admin persist qua recreate). Image build bằng `docker build` (`docker compose build` bị BuildKit chặn quyền đọc Dockerfile — exit 0 nhưng không tạo image). `APP_ENV` đổi `dev`→**`production`** (backup `.env.bak`, đã thêm vào `.gitignore`); `SECRET_KEY` 64 + `ADMIN_PASSWORD` 16 đã có → qua guard production.
-> 5. **Windows Service cloudflared KHÔNG dùng được** cho tunnel locally-managed (service luôn chạy `cloudflared.exe` KHÔNG tham số → crash-loop 55 lần, SCM restart 20s/lần, Event ID 7031). **Giải pháp: Task Scheduler `VideoAI-Cloudflared`** — `deploy/run-tunnel.cmd` (vòng lặp restart 5s), `/SC ONSTART /RU SYSTEM` — tunnel tự chạy khi boot, không cần đăng nhập.
-> 6. **Verify E2E:** `https://studioai.id.vn/` 200 (237KB) · `/api/health` 200 · `/openapi.json` 200 · `/media/outputs/*.mp3` 200 · container `web` healthy + `redis` · tunnel PID 10616 session 0 (SYSTEM) · kill tunnel tạm → domain vẫn 200. Server dev (PID 14284) đã dừng nhường port 8001.
-> 7. **Domain bị cache DNS Viettel cũ:** máy này resolve `studioai.id.vn` ra **AAAA parking cũ** (`2001:df7:ce00:19::3:0`) → trang WordPress "Lỗi kết nối tới cơ sở dữ liệu" (500). Cause: ISP resolver `116.97.90.124/126` giữ AAAA cũ; A record thì đúng (Cloudflare). Fix máy này: `Set-DnsClientServerAddress -InterfaceAlias "Wi-Fi" -ServerAddresses ("1.1.1.1","8.8.8.8")` (chưa chạy — chờ user gọi) hoặc chờ cache tự hết. **Không phải lỗi code/Docker** — luôn verify `curl --resolve studioai.id.vn:443:104.21.19.240` trước khi đổ lỗi.
-> 8. **`deploy/update.ps1`** đã tạo (script update 1 lệnh: build image → recreate container → chờ healthy → verify domain). Bản domain hiện tại **đã là bản mới nhất** (lần recreate lúc ~11h do lần test update).
-> 9. Bộ `deploy/`: `README.md` (quy trình thật 9 mục), `run-tunnel.cmd`, `start-server.ps1`, `status.ps1` (xem server trực tiếp), `update.ps1`, `cloudflared/config.yml`. `fix_bug` **mục 8** ghi đầy đủ; memory `project_video_template_saas.md` cập nhật.
-> 10. **NGHIÊM CẨN:** không đụng git (repo vẫn rebase dở — Bug 17). Thanh toán SePay vẫn ĐỂ SAU (Bug 25, chưa duyệt).
->
-> **QUY TẮC BẮT BUỘC — UPDATE CODE LÊN DOMAIN (user yêu cầu 2026-11-11):**
-> **CHỈ ĐƯỢC update/build/recreate code lên domain (chạy `docker build`, `docker compose up`, `deploy/update.ps1`, hoặc bất kỳ thao tác recreate container nào) KHI USER RA LỆNH TRỰC TIẾP trong conversation; và KHI USER RA LỆNH thì làm NGAY, KHÔNG hỏi lại.**
-> **Why:** 2026-11-11, trong lúc user chỉ hỏi thăm quy trình, tôi tự chạy `deploy/update.ps1` → container recreate → domain trả trang lỗi WordPress (500). User tưởng site hỏng, phải gỡ lỗi mới ra — thực ra do chuỗi sự cố và cache DNS Viettel, nhưng user mất công và tin rằng thao tác deploy phải do họ chủ động gọi.
-> **How to apply:** trong mọi phiên sau, tuyệt đối không tự build/recreate container cho domain. Nếu thấy code thay đổi chưa được deploy, PHẢI báo cáo trạng thái và CHỜ user ra lệnh "update"/"publish"/"deploy". Khi được lệnh → làm ngay, báo kết quả.
->
-> Cập nhật đầu file: 2026-11-11 (tổng hợp toàn bộ phiên — đọc mục "TỔNG HỢP" bên dưới).
-> **LẦN SAU LÀM TIẾP: ĐỌC FILE NÀY TRƯỚC KHI NHẬN TASK MỚI.**
-> Sau mỗi bug fix, cập nhật lại mục tương ứng trong file này (đánh ✅ + ngày).
-> **QUY TẮC CHỐNG LẶP:** việc nào đã xong thì đánh ✅ + ngày trong bảng ưu tiên (mục 5) — KHÔNG làm lại task đã ✅.
+> Ngày: 2026-11-13 | Mức độ: CRITICAL
+> Trạng thái code: ĐÃ BỔ SUNG forwarding subject_reference + ưu tiên video_prompt + test regression ngày 2026-11-13; CHƯA xác minh gateway/model video thật có hỗ trợ subject_reference. Không tuyên bố đã giải quyết hoàn toàn trước khi chạy clip thử trên đúng gateway/model.
 
 ---
 
-## ⚠️ TỔNG HỢP PHIÊN 2026-11-11 — TOÀN BỘ ĐỢT 2 → ĐỢT 6 (đọc mục này trước)
-> **Tất cả tính năng mới hôm nay CHƯA LÊN DOMAIN.** Domain phục vụ Docker image `web:latest` build ~11:30 sáng (trước toàn bộ công việc chiều nay) — xem **mục H** bên dưới + mục 8.
+## 🔴 Vấn Đề Cốt Lõi
 
-### A. Phân tích đối thủ aidancing.net (đợt 1)
-218 SKU, chia 8 nhóm: motion copy/trend video (~30 bản v2→v8.2), thay nhân vật/gương mặt, bán hàng No Prompt 18 ngành, "Bài viết → video" 60s (12 ngách, trả về video hoàn chỉnh), công cụ ảnh (nâng 2K, face swap, thay nền, fix da nhựa, sửa ảnh prompt), nhạc AI (tạo nhạc từ lời + cover 28 thể loại), nhép miệng theo audio/video (5 model). **Họ trả về video hoàn chỉnh; mình trả clip phôi** (khách tự edit — quyết định 05/11). Lợi thế của mình: dịch phụ đề 12 ngôn ngữ (LLM + ASS), Tải MXH, pricing hiển thị chi phí trước khi gen, credit ledger, giới hạn kích thước... Aidancing không có mảng hậu kỳ nào trong số đó; họ thắng ở SKU breadth và end-to-end delivery.
-
-### B. Dịch & Phụ đề — viết lại đường xử lý (đợt 2)
-Module mới `app/subtitles.py` thay thế luồng cũ trong `/api/video/transcribe`: **mặc định model `medium`** (trước là `small`); UI thêm dropdown "Độ chính xác" (`fast=small`/`accurate=medium`/`best=large-v3`); **VAD mềm hơn** (400ms, trước 2000ms mặc định của thư viện — hay cắt mất thoại nhỏ); **vá các khoảng lặng bị VAD cắt bỏ** bằng transcribe lại với VAD tắt (chỉ nhận khi confidence cao — chống ảo giác); **hợp nhất cue chồng lấn**; **LLM sửa lỗi nghe** (giữ nguyên số câu + mốc thời gian); **dịch bằng LLM theo ngữ cảnh** (batch 25 câu, giữ tên riêng, giới hạn 42 ký tự/dòng — LLM trước, fallback HF Opus-MT → Google Translate free); **wrap subtitle** xuống dòng đúng khung 9:16; trừ đúng 1 lần giá LLM khi dùng, số dư không đủ → fallback đường miễn phí.
-
-### C. Trang pháp lý + Chat AI (đợt 2–3)
-7 trang chính sách (terms/privacy/refund/acceptable-use/disclaimer/about/contact) render server-side, style dark-gold responsive (module `app/legal.py`). Chat AI hỗ trợ ngay trong app (bong bóng 💬 góc phải dưới, ~40 câu/giờ/user, trả lời theo tài liệu sản phẩm) — lưu lịch sử riêng từng tài khoản vào DB (`chat_messages`, migration **0012**).
-
-### D. Tách dữ liệu theo tài khoản (đợt 3)
-`uploads/u<id>/` · `outputs/u<id>/` · `voices/u<id>/` — mọi file sinh ra của từng user (upload, giọng clone, video tải MXH, phụ đề, render pipeline). URL `/media/<kind>/u<id>/<file>`. File cũ không di chuyển (tránh hỏng URL).
-
-### E. Landing page + /dashboard + style đồng nhất + OTP (đợt 4–5)
-- `/` = **landing page công khai** (nav: Trang chủ · Tính năng · Tài liệu · Bảng giá + "Vào Dashboard").
-- Tool chuyển vào **`/dashboard`**; chưa đăng nhập → về `/` (chỉ `/dashboard?login=1` hiện form).
-- `/pricing` **render động từ DB admin** (bảng `pricing_items` + `app_models`, giá Veo 3 5.7 · omni-flash 10.05 · Gemini Image 0.16 · DeepSeek 0.03 · Minimax-M3 0.05 · glm-5.3-flash 0.01 · claude-opus-5 0.01) + giải thích cách tính (video theo clip, ảnh theo ảnh, LLM theo lần gọi, TTS theo câu, cảnh lỗi miễn phí).
-- **Bỏ trang `/docs` riêng** (trùng mục Tài liệu & chính sách ở trang chủ); `/docs` → 301 → `/#docs`.
-- Style đồng nhất toàn bộ trang công khai (`app/site_shell.py` dùng chung token/header/footer/animation).
-- **Đăng ký bắt buộc SĐT + OTP** (ESMS.vn, migration **0013**); UI thêm ô SĐT + bước nhập mã 6 số; user cũ `phone_verified=1`; `APP_ENV=production` + chưa có ESMS → đăng ký trả **503** (không mở đăng ký giả).
-
-### F. Fix 4 điểm user phản hồi (đợt 6)
-#1 Tabs chính sách chuyển từ nav sidebar → **footer** của tool. #2 Bảng giá chi tiết từng model + đơn vị tính, đồng bộ giá admin. #3 Chưa đăng nhập → `/dashboard` về trang chủ (user đã chọn phương án này). #4 Bỏ hub `/docs` trùng lặp.
-
-### G. Trạng thái code & test
-- Migration: 0001 → **0013** (0012 chat_messages, 0013 phone_otps). Test migration chạy trên **bản copy DB thật** (21 user còn nguyên).
-- pytest: **203 passed, 7 skipped** (thêm 11 test subtitles + 8 phone OTP). `node --check` OK; Playwright full journey OK (đăng ký → dashboard → collapse → logo → `/`).
-
-### H. LIVE vs LOCAL — bản đồ trạng thái
-| | Live (`studioai.id.vn`) | Local (code hiện tại) |
-|---|---|---|
-| Version | Docker image `web:latest` (~11:30, trước mọi thay đổi chiều nay) | Working tree hiện tại |
-| `/dashboard` | **404** | Tool, chưa đăng nhập → `/` |
-| `/pricing` | **404** | Bảng giá DB-sync, đầy đủ |
-| `/terms`…`/contact` | **404** | 7 trang chính sách |
-| Đăng ký | **500** | OTP 6 số, SĐT bắt buộc |
-| Chat AI + lịch sử | không có | có, lưu DB riệng user |
-| `/` | SPA tool cũ ("VideoAI Studio") | Landing page mới |
-
-> Muốn domain nhận bản mới: **build image + recreate container** — **CHỈ khi user ra lệnh.**
-
-### I. Việc còn treo (user quyết — tôi không tự làm)
-1. **Rebuild image + recreate container** để domain nhận bản mới (chưa có lệnh).
-2. **ESMS_API_KEY/ESMS_API_SECRET** để đăng ký chạy được trên domain (đăng ký ESMS.vn).
-3. **Giá Veo 3 (5.7) / omni-flash (10.05) vs hoà vốn** — admin tự quyết; tôi không tự đổi giá.
-4. HF account `luatnguyen` vẫn 402; **Bug 17** (git rebase dở — chưa đụng); **Bug 25** (SePay 401 — để sau theo yêu cầu); **Bug 11/bảng** giữ nguyên. Clone giọng ElevenLabs cần `ELEVENLABS_API_KEY`.
-5. App vẫn chạy Docker container trên máy nhà; Docker Desktop đã bật lại (container web-1 healthy). DNS Viettel vẫn cache AAAA cũ trên máy này (chỉ ảnh hưởng máy này).
+Giai đoạn tạo ảnh keyframe đã đúng nhân vật/sản phẩm vì ảnh người dùng được đưa vào image-edit model. Tuy nhiên, trước sửa lần này, pipeline gen video chỉ gửi keyframe làm first_frame và bỏ ảnh tham chiếu gốc. Do đó video model có thể đổi danh tính hoặc thiết kế sản phẩm trong chuyển động.
 
 ---
 
-## 0.6. PHIÊN 2026-11-11 (đợt 7) — Tắt xác minh SĐT + 2 tính năng mới (bài viết→video, preset ngành) + Analytics + nav tài khoản
+## 📍 Luồng Pipeline Đầy Đủ
 
-> **CHƯA LÊN DOMAIN** — code chỉ trên máy dev. pytest **223 passed, 7 skipped** (trước: 203).
-> Yêu cầu user: (1) ẩn tạm thời xác minh SĐT; (2) bỏ Bug 17 (git) khỏi danh sách hiện tại; (3) tích hợp "bài viết → video 60s" + "preset bán hàng theo ngành"; (4) nav trang chủ theo trạng thái đăng nhập + icon đầu người (sửa thông tin / đăng xuất) + tab Analytics cho admin + style lại tab Tài khoản; (5) SePay để sau.
+### Bước 1 — User Upload Ảnh (Frontend)
+  File: static/index.html ~line 2867
+  charImgUrl = await upload(charFile)  → POST /api/uploads
+  character_image_url: charImgUrl      → gửi lên /api/assistant/pipeline ✅
 
-### A. Xác minh số điện thoại — TẮT TẠM THỜI (cờ trong `.env`)
-- Cờ mới **`REQUIRE_PHONE_VERIFICATION`** (mặc định `0` = tắt) — `app/config.py`, `.env`, `.env.example`.
-- `app/routers/auth.py`: `phone` **không bắt buộc** nữa; khi tắt → đăng ký trả token luôn, không gửi SMS, không chặn đăng nhập; endpoint `/verify-phone` + `/resend-otp` trả **409** ("đang tạm tắt").
-- Code OTP **giữ nguyên** (chỉ bật lại bằng cách đặt cờ = 1 + có `ESMS_API_KEY/SECRET`).
-- UI (`static/index.html`): xoá ô "Số điện thoại" + khối nhập mã OTP trong form đăng ký; viết lại khối JS đăng nhập.
-- `app/landing.py`: bước 1 landing đổi "Đăng ký & xác minh SĐT" → "Đăng ký tài khoản".
-- Test: `tests/test_phone_otp.py` viết lại — 4 test cho trạng thái TẮT + 7 test bật lại (fixture `phone_on`).
+### Bước 2 — Tạo Storyboard / Prompt (LLM)
+  File: app/videopipeline.py → plan_storyboard()
+  character_image_url chỉ được nhúng vào text message cho LLM:
+    "Character reference image: /media/uploads/u123/file.png"
+  LLM KHÔNG xem được ảnh thực tế (text-only call).
+  Kết quả: plan chứa text mô tả nhân vật, không có ảnh. ⚠️
 
-### B. Bug 17 (git/rebase) — BỎ KHỎI DANH SÁCH HIỆN TẠI
-- User quyết định 2026-11-11: **không làm git lúc này** (đã có bản chạy trên domain); khi nào cần sẽ làm tiếp → gỡ khỏi bảng ưu tiên mục 5. **Tôi KHÔNG đụng git.**
+### Bước 3 — Gen Ảnh Keyframe (Image Model) ✅ ĐÚNG
+  File: app/autopipeline.py → _run_keyframing() → _generate_keyframes()
 
-### C. Tính năng mới: **Bài viết (link) → Video 60s** — `app/article.py`
-- Luồng: tải & bóc nội dung bài viết (HTML → text, bỏ script/style/nav) → **LLM viết lời dẫn theo cảnh** (hook 3s → thân bài → CTA, không bịa số liệu) → **ảnh minh hoạ** mỗi cảnh (model ảnh admin) → **TTS** (edge-tts, cảm xúc theo tag) → **ffmpeg** dựng clip Ken Burns → ghép + **chèn phụ đề ASS** → **1 video hoàn chỉnh + file .srt**.
-- **Không dùng model video** → rẻ hơn hẳn pipeline clip phôi (chỉ 1 lượt LLM + N ảnh).
-- API: `POST /api/assistant/article/preview` (đọc thử, không tốn credit), `GET /api/assistant/article/estimate`, `POST /api/assistant/article` (job nền), `GET /api/assistant/article/{id}/status`.
-- UI: tab mới **"📰 Bài viết → Video 60s"** (link hoặc dán nội dung, chọn LLM/ảnh/giọng/thời lượng/tỉ lệ, xem video + tải .srt).
-- Verify (mock LLM/ảnh/TTS, **không tốn credit**): chạy thật ffmpeg → video 9s (3 cảnh × 3s) + ASS đã burn + .srt; `ffprobe` đúng thời lượng. Dựng server tạm + Playwright: 0 pageerror.
+  reference_path = resolve(job.character_image_url)  ← giải quyết URL thành Path
+  vilao_image.gen_image(prompt, dest, reference=reference_path)  ← dùng /images/edits
+  → Keyframe image trông GIỐNG nhân vật vì được conditioned trên ảnh gốc ✅
 
-### D. Tính năng mới: **Preset bán hàng theo ngành hàng** — `app/presets.py`
-- **16 ngành**: thời trang, mỹ phẩm, đồ ăn vặt, hàng tiêu dùng, gia dụng, mẹ & bé, đồ công nghệ, phụ kiện, giày dép, decor, đồ dùng học tập, thực phẩm chức năng, đồ chơi, xe cộ, phụ kiện thú cưng, mọi sản phẩm.
-- Mỗi preset có: đối tượng · giọng văn · kiểu hook · nỗi đau · điểm bán · lời CTA · phong cách hình ảnh → nhúng vào prompt kịch bản (`videopipeline.plan_storyboard(preset=...)`).
-- API `GET /api/assistant/presets`; `POST /api/assistant/pipeline` nhận `preset` (id sai → 422), lưu trong `selections["preset"]` (persist được qua restart).
-- UI: tab mới **"🛍️ Bán hàng theo ngành"** — lưới chọn ngành → form sản phẩm (tên, điểm nổi bật, giá, thời lượng, model, giọng) → bấm "Tạo video bán hàng" (chạy pipeline, poll tiến độ) hoặc "Mở trong Trợ lý AI".
+  Sau khi gen xong:
+  kf["image_url"] = url_for(dest)                  ← URL ảnh keyframe đã gen
+  kf["character_reference_url"] = url_for(reference_path) if reference_path else ""
+  (Sau cập nhật 2026-11-13, reference này được forward sang bước gen video.)
 
-### E. Nav trang chủ theo trạng thái đăng nhập + icon đầu người — `app/site_shell.py`
-- Chưa đăng nhập → nav hiện **"Đăng nhập" + "Đăng ký"** (thay nút "Vào Dashboard"); đã đăng nhập → **"Dashboard →" + icon đầu người**.
-- Bấm icon → dropdown: tên · email · số dư credit · **Sửa thông tin** · **Đăng xuất**.
-- Modal "Sửa thông tin" (tên, email, mật khẩu) → `PUT /api/auth/me` (đổi mật khẩu phải nhập mật khẩu hiện tại; trùng tên/email → 409). Có thêm nút ✏️ cạnh "Thoát" trong sidebar tool (dùng chung modal).
-- `/dashboard?login=1&tab=register` → mở thẳng tab Đăng ký.
-- Verify (Playwright, server tạm): guest → 2 nút; đã đăng nhập → Dashboard + avatar; đổi tên → header cập nhật; đăng xuất → về trạng thái guest; **0 pageerror**.
+### Bước 4 — Gen Video (MiniMax)
+  File: app/autopipeline.py → _run_rendering() → _gen_scene_video()
 
-### F. Admin: tab **📊 Analytics** + style lại tab **👥 Tài khoản**
-- `GET /api/admin/analytics?period=lifetime|today|yesterday|l7d|l30d|custom&start&end`:
-  - *Người dùng*: tổng hiện tại · **người dùng mới** · **người dùng hoạt động (online)** trong kỳ · đang online (15 phút) · lượt đăng nhập.
-  - *Tiền*: **tiền nạp** (₫ + credit) · **tiền chi** (credit + ₫ quy đổi) · bảng theo ngày.
-- `GET /api/admin/users/{uid}/detail` (thông tin + ledger + giao dịch nạp + lịch sử hoạt động + sản phẩm render + template) và `PUT /api/admin/users/{uid}` (sửa tên/email/vai trò).
-- UI tab Tài khoản: **bấm tài khoản → sổ ra 4 mục**: ✏️ Thông tin · 💰 Tiền · 📋 Hoạt động · 📦 Sản phẩm (có cả cộng/trừ credit và lịch sử dòng tiền).
+  Trạng thái code sau cập nhật 2026-11-13:
+  - first_frame là ảnh keyframe đã gen đúng và là visual anchor chính.
+  - character_reference_url được truyền làm subject_reference cho cảnh có người.
+  - review_outfit: cảnh người dùng ảnh nhân vật; cảnh chi_tiet_san_pham dùng ảnh sản phẩm.
+  - Prompt video ưu tiên video_prompt (mô tả chuyển động) và thêm chỉ dẫn giữ nguyên nhận dạng/sản phẩm.
+  - app/minimax.py đưa subject_reference vào payload MiniMax và OpenAI-style; lỗi đọc ảnh không còn bị bỏ qua.
+  - Chưa được xác minh gateway/model có hiểu trường subject_reference. Gửi field không đồng nghĩa model chắc chắn sử dụng nó.
 
-### G. Kiểm thử
-- **pytest 223 passed, 7 skipped** (thêm `tests/test_new_features.py` 13 test: preset, bài viết, analytics, sửa thông tin).
-- `node --check` OK cho block JS của SPA; Playwright chụp & kiểm tra 4 tab mới + tab Tài khoản mở rộng → **0 pageerror**.
-- Verify E2E bài viết→video bằng mock (LLM/ảnh/TTS): video 9s + ASS burn + .srt — đúng kỹ thuật dựng.
+## Trạng thái xác minh 2026-11-13
 
-### G1. Bug "Chưa chọn model cho bước: Gen video" + thêm lựa chọn model video (đợt 8, 2026-11-11)
-- **Bug:** `validate_selections` mặc định `required=["llm","image_generate","video_i2v"]` → luôn đòi model video, trong khi luồng "Bài viết → video" **cố ý không dùng model video** (ảnh + TTS là đủ) → bấm "Dựng video" báo lỗi sai. Fix: `article_start` gọi `validate_selections(..., required=["llm","image_generate"])`; thêm test hồi quy `test_article_start_does_not_require_video_model`.
-- **Thêm lựa chọn:** UI tab Bài viết thêm 2 ô — **"Kiểu dựng video"** (`Ảnh + giọng đọc + phụ đề (rẻ)` | `Dùng model video thật (Veo/omni-flash)`) và **"Model video"** (chỉ hiện khi chọn chế độ video). Backend: `video_mode` + `model_video`; dựng bằng model video → ảnh keyframe làm first_frame → `minimax.generate` → lặp/cắt cho khớp thời lượng giọng đọc → ghép audio TTS; **trừ credit 1 request/cảnh** (giá `video_pricing_key`); ước tính hiển thị "N ảnh + N clip video".
-- **Verify (không tốn credit):** mock gateway 127.0.0.1:8099 (chat + images) + edge-tts thật + ffmpeg thật → E2E từ UI: dán nội dung → dựng → **"✅ Hoàn tất (12.4s, 4 cảnh)"**, có `<video>` + link tải `.srt`, 0 pageerror.
-- **Chống treo ffmpeg khi ảnh hỏng/không giải mã được:** thêm `_probe_image()` (ffprobe) kiểm ảnh ngay khi sinh, không hợp lệ → job fail nhanh với thông báo rõ; `_ffmpeg` có `timeout=240s` và bắt `TimeoutExpired` → không còn treo vô hạn.
-- pytest **224 passed, 7 skipped**. Dev server 8002 đã restart để có code mới (bài học: sửa Python xong phải restart; `static/index.html` serve từ đĩa nên tự mới).
-
-### G2. Sửa sự cố "bấm Dashboard không được" (2026-11-11, cuối phiên)
-- **Nguyên nhân:** server dev cổng **8002** khởi động từ 15:39 (trước khi có code mới) → trang chủ là landing CŨ, nút "Vào Dashboard →" trỏ `/dashboard` không có `?login=1` → SPA mới (serve từ đĩa) thấy chưa đăng nhập tự về `/` → bấm không thấy gì.
-- **Sửa:** khởi động lại dev server bằng launcher của dự án (`python run.py --port 8002` — tự kill PID cũ, chạy bản mới). Verify Playwright: khách bấm "Đăng nhập" → form đăng nhập hiện; "Đăng ký" → tab đăng ký; đã đăng nhập bấm "Dashboard →" → vào app. 0 pageerror.
-- **Lưu ý vận hành:** mọi sửa đổi Python ở máy dev chỉ có hiệu lực sau khi restart dev server; `static/index.html` thì serve từ đĩa nên luôn là bản mới nhất.
-
-### H. ⚠️ TRẠNG THÁI DOMAIN — CHƯA LÊN
-- Domain vẫn chạy **Docker image build 11:08 sáng** (verify lại hôm nay: `/dashboard` 404, `/pricing` 404, `/terms` 404, `/api/support` 404). Toàn bộ công việc đợt 7 cũng **chưa live**.
-- **Tôi KHÔNG build/recreate container.** Chỉ khi user ra lệnh "update/publish/deploy" mới làm.
+Regression test kiểm tra first_frame + subject_reference được nối từ pipeline và payload OpenAI-style chứa đủ ảnh; test chưa chạy API/model video thật. Chưa đánh dấu end-to-end hoàn tất trước khi biết model/gateway đang dùng và kiểm tra phản hồi thật. Không gọi API video có tính phí nếu chưa có xác nhận của user.
 
 ---
 
-## 0.1. PHIÊN 2026-11-11 (đợt 2) — Cải thiện Dịch & Phụ đề + Trang pháp lý + Chat AI + Nút hỗ trợ
+## 🔎 Vị Trí Code Chính Xác Của Bug
 
-> **CHƯA DEPLOY LÊN DOMAIN** — code mới chỉ trên máy dev. Production `studioai.id.vn` vẫn chạy bản cũ cho tới khi user ra lệnh update (`deploy/update.ps1`). pytest **195 passed, 7 skipped** (thêm 11 test mới); `node --check` OK; py_compile OK.
+### BUG A — autopipeline.py: character_reference_url không được forward
 
-### A. Dịch & Phụ đề — từng công đoạn được cải thiện (dùng model hiện có)
-**Vấn đề user báo:** "dịch vẫn không lấy hết được thoại trong video".
+ĐÃ SỬA CODE 2026-11-13: `_gen_scene_video()` resolve reference ảnh từ keyframe/job và truyền `subject_reference` vào provider. Xem Bước 4 và phần trạng thái xác minh bên trên. Gateway/model thật chưa được xác nhận.
 
-**Module mới `app/subtitles.py`** (thay luồng cũ trong `transcribe_video`):
-1. **ASR chính xác hơn:** mặc định model **medium** (trước là small); UI cho chọn **Nhanh (small) / Chính xác (medium) / Tối đa (large-v3)**. `WHISPER_MODEL` trong `.env` (nếu đặt) vẫn ép model.
-2. **VAD mềm hơn:** `min_silence_duration_ms=400`, `speech_pad_ms=200` (mặc định thư viện là 2000ms — rất dễ cắt mất thoại nhỏ/đuôi câu).
-3. **Vá khoảng lặng bị VAD bỏ sót (`_repair_gaps`)**: mọi khoảng >1.6s giữa 2 câu được transcribe lại với VAD tắt; chỉ nhận khi `no_speech_prob ≤ 0.55` và `avg_logprob ≥ -1.2` (chống ảo giác). Số đoạn vá trả về UI trong `asr_recovered_cues`.
-4. **Hợp nhất cue chồng lấn** (`_merge`) — SRT không bao giờ có 2 cue thời gian trùng.
-5. **Sửa lỗi nghe bằng LLM (`refine_transcript`)**: dùng model LLM admin (deepseek/minimax/glm/claude) sửa chính tả, tên riêng, dấu câu — **giữ nguyên số câu + mốc thời gian** (từ chối kết quả nếu lệch số câu).
-6. **Dịch bằng LLM theo ngữ cảnh (`translate_segments`)**: dịch theo lô 25 câu, có câu trước/sau làm ngữ cảnh, giữ tên riêng/số/thuật ngữ nhất quán, giới hạn ký tự mỗi dòng; nếu LLM trả lệch số câu → giữ nguyên bản gốc cho lô đó. **Thứ tự ưu tiên: LLM → HF Opus-MT → Google Translate free.**
-7. **Xuống dòng phụ đề (`wrap_subtitle`)**: tối đa 42 ký tự/dòng, 2 dòng/cue (bilingual = 1 dòng mỗi ngôn ngữ) — không tràn khung 9:16.
-8. **Tính tiền minh bạch:** có LLM thì trừ đúng 1 lần giá model LLM (`llm_used` trả về UI); số dư không đủ → tự fallback đường miễn phí. `CHAT/LLM` không làm sập request khi trừ credit lỗi.
-9. **API `/api/video/transcribe` thêm:** `quality`, `use_llm`, `llm_model` (request) + response `asr_model`, `asr_recovered_cues`, `llm_used`, `llm_model`.
+### BUG B — autopipeline.py: character_reference_url CHỈ SET trong review_outfit mode
 
-**UI tab Dịch & Phụ đề:** thêm dropdown **Độ chính xác nhận dạng** + checkbox **Dùng AI để sửa lỗi nghe và dịch chuẩn (tốn credit)**; dòng trạng thái hiện engine, số câu, số đoạn thoại vá, model AI và ngôn ngữ đích.
+ĐÃ XÁC MINH SAI SO VỚI CODE HIỆN TẠI: `_generate_keyframes()` lưu `character_reference_url` khi có `reference_path` ở mọi mode (app/autopipeline.py). Không cần fix lại mục này.
 
-**Verify:** chạy thật trên `D:/code/Ad-KOL-Nomadtoast-2.mp4` (27.4s): medium nhận 6 câu, `recovered=0` (không thêm ảo giác vào khoảng lặng thật); `wrap_subtitle` ≤42 ký tự/dòng. 11 test mới `tests/test_subtitles_ai.py` (wrap, model map, refine giữ mốc thời gian, từ chối lệch số câu, dịch theo ngữ cảnh, fallback lô lệch, merge, API E2E mock ASR+LLM). **Chưa gọi LLM thật** (tôn trọng quy tắc tiết kiệm credit — logic LLM đã có unit test mock).
+### BUG C — minimax.py: build_payload() không có tham số subject_reference
 
-### B. Trang pháp lý (giống aidancing, tách từng page)
-Module mới `app/legal.py` render HTML (dark + gold, responsive) cho 7 trang, route đăng ký trong `app/main.py`:
-| Đường dẫn | Nội dung |
-|---|---|
-| `/terms` | Điều khoản dịch vụ: đối tượng, tài khoản, credit/thanh toán, sở hữu trí tuệ, trách nhiệm nội dung, nội dung cấm, giới hạn trách nhiệm, thay đổi điều khoản |
-| `/privacy` | Chính sách bảo mật: dữ liệu thu thập, mục đích, chia sẻ, lưu trữ/xoá, bảo mật, quyền của bạn, cookies |
-| `/refund` | Chính sách hoàn tiền: điều kiện, trường hợp không hoàn, thời gian xử lý, sự cố kỹ thuật |
-| `/acceptable-use` | Chính sách nội dung: cấm tuyệt đối, hạn chế, trách nhiệm người dùng, hậu quả vi phạm, báo cáo |
-| `/disclaimer` | Miễn trừ trách nhiệm nội dung người dùng tạo: AI có thể sai, bản quyền/giọng nói/hình ảnh, không tư vấn chuyên môn, hệ quả nền tảng |
-| `/about` | Về chúng tôi + thông tin đơn vị vận hành |
-| `/contact` | Kênh hỗ trợ, báo lỗi, yêu cầu pháp lý/gỡ nội dung, hợp tác |
+ĐÃ SAI SO VỚI CODE HIỆN TẠI: subject_reference đã được hỗ trợ trong build_payload(), _openai_create() và generate(). Xem kết quả sửa/test.
 
-Nội dung nêu rõ **trách nhiệm pháp lý thuộc về người dùng tạo nội dung**, cấm vi phạm bản quyền/re-up, cảnh báo AI có thể sai và vi phạm chính sách nền tảng. Verify: 7/7 route trả **200** qua server tạm 8002.
+### BUG D — _scene_video_prompt() dùng sai prompt cho video
 
-### C. Chat AI hỗ trợ trong app (dùng model admin)
-- **`app/chat_knowledge.py`**: system prompt + tài liệu sản phẩm đầy đủ (9 tab, 5 chế độ Trợ lý AI, batch, tải MXH, dịch & phụ đề, credit, admin). Bot **chỉ trả lời theo tài liệu**, không bịa; câu ngoài phạm vi → hướng dẫn liên hệ quản trị viên.
-- **`app/llm.py`**: `resolve_llm(db, id)` chọn model LLM đang bật rẻ nhất (dùng chung cho phụ đề + chat).
-- **`app/routers/chat.py`**: `POST /api/chat` (giới hạn 40 câu/giờ/user, lịch sử 12 tin, timeout 60s; trả lỗi thân thiện 502/503); `GET /api/support` (public) trả link Zalo/Facebook/Telegram/email.
-- **UI**: bong bóng chat 💬 góc phải dưới (chỉ hiện khi đã đăng nhập), panel kính mờ có lịch sử hội thoại; Enter để gửi.
-- **Verify:** server tạm — chat chưa đăng nhập → **401**; đã đăng nhập nhưng chưa có model → **503** kèm message tiếng Việt; trang `/` chứa markup chat/support (12 match). Chưa gọi LLM thật.
+ĐÃ SỬA CODE 2026-11-13: ưu tiên `video_prompt`, giữ source image prompt làm fallback và thêm identity/product lock theo mode/cảnh.
 
-### D. Nút hỗ trợ + link pháp lý trong UI
-- Sidebar footer (trên tên/credit): hàng nút **💬 Zalo · 📘 Facebook · ✈️ Telegram** — tự ẩn nếu chưa cấu hình.
-- Dưới user pill: hàng link **Điều khoản · Bảo mật · Hoàn tiền · Nội dung · Liên hệ**.
-- Env mới (`.env.example`): `SITE_NAME`, `SUPPORT_ZALO_URL`, `SUPPORT_FACEBOOK_URL`, `SUPPORT_TELEGRAM_URL`, `SUPPORT_EMAIL`, `CHAT_CREDIT_COST` (0 = chat miễn phí). **User cần điền link Zalo/Facebook thật vào `.env`.**
+### BUG E — assistant.py: gen-scenes route bỏ character_image_url
 
-### E. Bug nhỏ đã sửa kèm
-- `/` đổi favicon `data:,` → `/static/favicon.svg` (đã tạo file icon vàng).
-- `settings.whisper_model` mặc định đổi `"small"` → `""` (tự chọn theo `quality`); `.env.example` giải thích.
-- Gộp logic chọn LLM vào `app/llm.py` (trước nằm rải trong `videotools.py`) — dùng chung phụ đề + chat.
+Không thuộc luồng pipeline 1-click user đang gặp; chưa sửa/đánh giá cho luồng endpoint riêng.
+
+
+  File: app/minimax.py lines 103–120:
+    def build_payload(prompt, duration, ratio, resolution,
+                      first_frame=None, model=None):
+    # Chỉ có first_frame, không có subject_reference ❌
+
+  File: app/minimax.py lines 227–260: _openai_create() không có char ref
+    def _openai_create(..., first_frame=None):
+    # Không nhận character reference ❌
+
+### BUG D — _scene_video_prompt() dùng sai prompt cho video
+
+  File: app/autopipeline.py lines 623–631:
+    def _scene_video_prompt(job, kf) -> str:
+        prompt = kf.get("source_image_prompt") or kf.get("image_prompt")
+        # Dùng IMAGE GENERATION PROMPT (rất dài, chi tiết ảnh tĩnh)
+        # thay vì VIDEO PROMPT (clean, tập trung motion)
+
+  kf["video_prompt"] chứa prompt motion từ LLM nhưng KHÔNG ĐƯỢC ƯU TIÊN.
+  Video model nhận prompt thiết kế cho ảnh tĩnh → chất lượng motion kém.
+
+### BUG E — assistant.py: gen-scenes route bỏ character_image_url
+
+  File: app/routers/assistant.py
+  class GenScenesIn(BaseModel):
+      character_image_url: str = ""  ← nhận vào nhưng KHÔNG BAO GIỜ DÙNG
 
 ---
 
-## 0.2. PHIÊN 2026-11-11 (đợt 3) — Làm rõ "không thấy trang pháp lý" + Tách dữ liệu theo tài khoản
+## ✅ GIẢI PHÁP CHI TIẾT
 
-> **Nguyên nhân user "không thấy" trang pháp lý / nút hỗ trợ:** code mới **chưa được nạp lại vào tiến trình đang chạy** (uvicorn không `--reload`), và link pháp lý chỉ nằm ở chân sidebar (rất nhỏ). Ngoài ra **Docker Desktop đang TẮT** → port 8001 do **dev server `python run.py --port 8001` (PID 17364, khởi động 13:13)** giữ, tunnel trỏ vào đó. `https://studioai.id.vn/terms` trả **200** (đúng bản mới) khi verify bằng `curl --resolve studioai.id.vn:443:104.21.19.240` — còn gõ domain trực tiếp thì máy này vẫn dính **cache DNS Viettel** (AAAA cũ → trang WordPress "Lỗi cơ sở dữ liệu"), đúng như mục 8.4.
+### Fix 1 — autopipeline.py: Luôn set character_reference_url (mọi mode)
 
-### A. Trang pháp lý + hỗ trợ — làm RÕ & dễ thấy
-1. **Trang chủ tài liệu `/welcome`** (mới): landing page public có **nav tới từng trang**, mỗi trang **1 đường dẫn riêng** (`/terms` `/privacy` `/refund` `/acceptable-use` `/disclaimer` `/about` `/contact`), card tóm tắt từng trang, nút **"Vào ứng dụng"**.
-2. **Link pháp lý ở 3 nơi trong giao diện**: (a) màn hình đăng nhập — khối **"📚 Trang tài liệu & chính sách"**; (b) chân sidebar — **📚 Tài liệu** + Điều khoản/Bảo mật/Hoàn tiền/Nội dung/Liên hệ; (c) nav ngang trên từng trang pháp lý (dùng chung, quay lại được).
-3. **Nút hỗ trợ do ADMIN cấu hình trong UI** (không phải sửa `.env`): tab **🛠 Admin** → card **"Liên hệ hỗ trợ"** với 4 ô (Zalo / Facebook / Telegram / Email) + nút lưu.
-   - API mới: `GET /api/admin/support`, `PUT /api/admin/support` (admin), `GET /api/support` (public).
-   - Lưu ở bảng `app_settings` (`support.<key>`), `.env` chỉ là fallback → `app/support.py`.
-   - Nút sidebar **tự ẩn** nếu chưa cấu hình; admin lưu xong là hiện ngay (không cần restart).
-4. **Hộp chat AI** nổi góc phải dưới (bong bóng 💬) — đã có từ đợt 2, nay thêm nút **🗑 xoá lịch sử**.
+  TRƯỚC (line 524–525):
+    "character_reference_url": url_for(reference_path) if review_mode and reference_path else "",
 
-### B. Dữ liệu TÁCH RIÊNG theo từng tài khoản
-Thêm `app/media.py::user_dir(kind, user_id)` → mọi file của user nằm ở `<kind>/u<id>/`:
-| Loại | Trước | Sau |
-|---|---|---|
-| Upload (template, batch, nhân vật) | `uploads/{user.id}_{token}` | `uploads/u<id>/{token}` |
-| Giọng đọc mẫu | `voices/voice_{user.id}_{vid}` | `voices/u<id>/voice_{vid}` (meta lưu `u<id>/...`) |
-| Video tải MXH (đơn + batch) | `outputs/dl_{user.id}_*` | `outputs/u<id>/dl_*` |
-| Video xử lý (phụ đề/lồng tiếng/blur) | `outputs/proc_{user.id}_*` | `outputs/u<id>/proc_*` |
-| Clip phôi + keyframe + TTS của pipeline | `outputs/pipe_*` | `outputs/u<id>/pipe_*` |
-| Video render (fast / AI / MimicMotion) | `outputs/gen_{id}.mp4` | `outputs/u<owner>/gen_{id}.mp4` (tra owner qua `owner_dir_for_generation`) |
-| Voice preview, final concat | `outputs/voice_preview_*`, `final_{user.id}_*` | `outputs/u<id>/...` |
+  SAU:
+    "character_reference_url": url_for(reference_path) if reference_path else "",
 
-- URL `/media/<kind>/u<id>/<file>` vẫn phục vụ bình thường (`resolve()` + StaticFiles chạy đệ quy).
-- **File cũ** (trước khi tách) giữ nguyên chỗ + URL cũ vẫn chạy — không di chuyển/migrate (tránn hỏng dữ liệu đang có).
-- Thumbnail thư viện vẫn ở `outputs/thumbs/` (tên unique, không chứa dữ liệu user).
+  Lý do: Với standard mode có upload ảnh, reference_path luôn có giá trị
+  nhưng bị điều kiện "if review_mode" chặn lại.
 
-### C. Hộp chat AI — RIÊNG TỪNG TÀI KHOẢN (lưu DB, không dùng chung)
-- Bảng mới **`chat_messages`** (migration **0012**): `id, user_id, role, content, created_at` — index theo `user_id`.
-- `POST /api/chat` **không còn tin `history` do client gửi** → server tự lấy lịch sử **của user đó** trong DB rồi gửi kèm cho LLM → không thể lẫn dữ liệu giữa 2 tài khoản.
-- Lưu cả 2 message (user + assistant) vào DB; `GET /api/chat/history` trả lịch sử **của riêng tài khoản** (200 tin gần nhất); `DELETE /api/chat/history` xoá lịch sử của tài khoản.
-- UI: mở panel = tự nạp lịch sử từ server; nút 🗑 xoá; **đăng xuất → reset lịch sử**, đăng nhập tài khoản khác → lịch sử khác.
-- Verify (server tạm + fake LLM ở `127.0.0.1:8099`): user1 chat 2 lần → lần 2 `n_ctx=4` (đúng là có lịch sử); **user2 xem history = rỗng**; DELETE → rỗng.
+### Fix 2 — autopipeline.py: Forward character ref vào _gen_scene_video()
 
-### D. Kiểm thử
-- `pytest tests/ -q` → **195 passed, 7 skipped** (cập nhật `test_features` kỳ vọng alembic `0012` + thêm `chat_messages`; `test_more` dùng `media.resolve()` thay vì đường dẫn cũ).
-- Migration 0012 thử trên **bản copy của DB thật** → lên version `0012`, `chat_messages` tồn tại, **21 user còn nguyên**.
-- Server tạm (port 8003): `/welcome` 200 (nav đủ 7 trang), `PUT /api/admin/support` → `GET /api/support` trả đúng link, upload của user → `/media/uploads/u2/…`, chat tách theo user (xem trên).
+  Trong hàm _gen_scene_video() (line 634):
+  Thêm tham số character_ref và truyền vào minimax.generate():
 
-### E. ⚠️ TRẠNG THÁI TRIỂN KHAI — chưa động vào domain
-> **QUY TẮC:** `studioai.id.vn` **chỉ** được update khi user ra lệnh. Không hỏi, không gợi ý, không tự restart/bật Docker/recreate container.
-> Hiện tại: **toàn bộ code đợt 2 + đợt 3 nằm trên máy dev, CHƯA lên domain.** Tiến trình đang giữ cổng 8001 là dev server `python run.py --port 8001` (PID 17364, 13:13) — chạy code cũ, nên UI mới chưa hiện. Docker Desktop đang tắt.
+  TRƯỚC:
+    first_frame = resolve(kf.get("image_url"))
+    minimax.generate(prompt=scene_prompt, dest=dest, first_frame=first_frame, ...)
 
-Các việc còn treo (user tự quyết khi nào làm, không cần trả lời):
-1. **Restart server 8001 / bật Docker / `deploy/update.ps1`** — chỉ khi user ra lệnh.
-2. **Nhập link Zalo/Facebook thật** — ưu tiên dùng card trong tab Admin (lưu vào `app_settings`, hiện ngay không cần restart), hoặc đặt `SUPPORT_ZALO_URL` / `SUPPORT_FACEBOOK_URL` trong `.env`.
-3. **File cũ chưa tách** — có muốn migrate sang `u<id>/` không (cần script + cập nhật URL trong DB; hiện tại file cũ vẫn chạy bình thường).
+  SAU:
+    first_frame = resolve(kf.get("image_url"))
+    # Lấy ảnh tham chiếu nhân vật gốc (ưu tiên kf, fallback job)
+    char_ref_url = kf.get("character_reference_url") or job.character_image_url
+    character_ref = resolve(char_ref_url) if char_ref_url else None
+    minimax.generate(
+        prompt=scene_prompt, dest=dest,
+        first_frame=first_frame,
+        subject_reference=character_ref,  ← THÊM MỚI
+        ...
+    )
 
----
+### Fix 3 — minimax.py: Thêm subject_reference vào build_payload()
 
+  Trong build_payload() (line 103):
+  TRƯỚC:
+    def build_payload(prompt, duration, ratio, resolution,
+                      first_frame=None, model=None):
 
-## 0.3. PHIÊN 2026-11-11 (đợt 4) — `/` thành landing page, tool dời sang `/dashboard` + làm lại giao diện
+  SAU:
+    def build_payload(prompt, duration, ratio, resolution,
+                      first_frame=None, subject_reference=None, model=None):
+        content = [{"type": "text", "text": prompt}]
+        if first_frame is not None:
+            # ... code hiện có ...
+            content.append({..., "role": "first_frame"})
+        if subject_reference is not None:
+            raw = subject_reference.read_bytes()
+            mime = mimetypes.guess_type(subject_reference.name)[0] or "image/png"
+            raw, mime = _ensure_min_size(raw, mime)
+            b64 = base64.b64encode(raw).decode()
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                "role": "subject_reference"
+            })
 
-> **CHƯA LÊN DOMAIN** — code chỉ trên máy dev. pytest **195 passed, 7 skipped**; node --check OK.
-> **Lưu ý vận hành:** `static/index.html` được phục vụ **trực tiếp từ đĩa** qua StaticFiles → mọi sửa đổi UI **lên domain ngay**, không cần restart; còn route Python mới (`/dashboard`, `/docs`, `/pricing`, `/welcome`) chỉ nạp khi **restart server**. (Xem mục E — domain hiện trộn lẫn vì lý do này.)
+### Fix 4 — minimax.py: Thêm subject_reference vào _openai_create()
 
-### A. Cấu trúc
-| URL | Trước | Sau |
-|---|---|---|
-| `/` | SPA đăng nhập/dashboard | **Landing page công khai** (`app/landing.py`): nav (Tính năng · Cách dùng · Tài liệu · Bảng giá), hero, 8 tính năng, 3 bước, lưới tài liệu/chính sách, footer — gradient vàng gold trên nền than, phong cách "dark premium" |
-| `/dashboard` | — | **Tool** (SPA `static/index.html`) |
-| `/pricing` | 302 → login | **Bảng giá công khai** (chỉ nêu nguyên tắc: 1 credit = 1.000đ, ước tính chi phí trước khi tạo; không bịa con số) |
-| `/docs` | `/welcome` | **Trang chủ tài liệu** (cùng nội dung `/welcome`, thêm nav "Trang chủ" + "Bảng giá"; CTA → `/dashboard`) |
-| `/welcome` | trang docs | **301 → `/docs`** |
-| `/terms`…`/contact` | 7 trang pháp lý | giữ nguyên |
+  Tương tự fix 3 nhưng cho _openai_create():
+  TRƯỚC:
+    def _openai_create(..., first_frame=None):
 
-### B. Giao diện tool (`static/index.html`) — nâng cấp chuyên nghiệp
-1. **Bỏ khối tài liệu/chính sách** dưới tên user (theo yêu cầu).
-2. **Nút hỗ trợ luôn hiện** (trên user pill): **💬 Trợ lý AI** · **🟢 Zalo** · **📘 Facebook** (Telegram chỉ hiện khi có link). Chưa cấu hình → bấm hiện toast hướng dẫn vào tab Admin → "Liên hệ hỗ trợ" (lưu `app_settings`, hiện ngay không cần restart).
-3. **Sidebar thu gọn được** bằng nút `‹`/`›` ở góc logo: về dạng icon-only (72px), nhớ lựa chọn vào `localStorage.sbCollapsed`; nút Thoát thành icon `⎋`.
-4. **Màn đăng nhập làm lại theo split-panel**: nửa trái brand + giá trị + 4 tính năng + 3 stat (12 ngôn ngữ / 20 sản phẩm/lô / 1.000đ); nửa phải form kính mờ với CTA vàng gold. H1/sub đổi theo tab Đăng nhập/Đăng ký.
-5. **Nền & token**: ambient gradient thêm ánh tím (violet) + vàng; `--radius` 14→16, `--radius-sm` 10→12; nút hỗ trợ `white-space:nowrap` (hết tràn 2 dòng).
+  SAU:
+    def _openai_create(..., first_frame=None, subject_reference=None):
+        ...
+        if subject_reference is not None:
+            raw = subject_reference.read_bytes()
+            mime = mimetypes.guess_type(subject_reference.name)[0] or "image/png"
+            raw, mime = _ensure_min_size(raw, mime)
+            body["subject_reference"] = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
 
-### C. Test
-- `test_ui.py` sửa `page.goto(base)` → `base + /dashboard` (2 test pass lại). **pytest 195 passed, 7 skipped.**
-- Server tạm 8005: `/`, `/dashboard`, `/docs`, `/pricing`, `/terms`, `/api/support` → **200**.
-- Playwright: landing page, màn đăng nhập split, dashboard (nút hỗ trợ hiện), sidebar thu gọn — ảnh `D:/c/Users/Admin/AppData/Local/Temp/shots/` (không lưu vào repo).
+### Fix 5 — minimax.py: Thêm subject_reference vào hàm generate()
 
-### E. ⚠️ Nguyên nhân "domain tự hiển thị thay đổi UI" (user từng thắc mắc)
-Chỉ `index.html` lên tay do StaticFiles; còn route Python mới KHÔNG có trên tiến trình cũ (PID 17364, 13:13) → `/welcome`, `/api/chat/history` trả 404; nút 🗑 xoá lịch sử / admin "Lưu liên hệ hỗ trợ" sẽ báo lỗi 404. **Tôi KHÔNG deploy.** Muốn đồng bộ phải restart server — **chỉ làm khi user ra lệnh.**
+  Hàm generate() (line 299) phải nhận và forward subject_reference:
+  TRƯỚC:
+    def generate(prompt, dest, *, duration=5, ratio="9:16", resolution="768P",
+                 first_frame=None, ...):
 
----
+  SAU:
+    def generate(prompt, dest, *, duration=5, ratio="9:16", resolution="768P",
+                 first_frame=None, subject_reference=None, ...):
+        ...
+        tid = create_task(client,
+            build_payload(prompt, duration, ratio, resolution, first_frame,
+                          subject_reference=subject_reference, model=model), ...)
+        # và trong openai path:
+        tid = _openai_create(..., first_frame=first_frame,
+                             subject_reference=subject_reference)
 
-## 0.4. PHIÊN 2026-11-11 (đợt 5) — Production → `/dashboard`, landing + style đồng nhất + OTP + animation
+### Fix 6 — autopipeline.py: Dùng video_prompt thay vì image_prompt
 
-> **CHƯA LÊN DOMAIN** — code chỉ trên máy dev. pytest **203 passed, 7 skipped**; node --check OK.
+  Trong _scene_video_prompt() (line 623):
+  TRƯỚC:
+    prompt = kf.get("source_image_prompt") or kf.get("image_prompt")
+    if not prompt and kf.get("video_prompt"):
+        prompt = kf["video_prompt"]
 
-### A. `/docs` trở thành tài liệu của SẢN PHẨM (không còn Swagger)
-Trước: `/docs` bị FastAPI gắn Swagger UI → user thấy giao diện API. **Fix:** `FastAPI(docs_url=None, redoc_url=None)`. `/openapi.json` giữ nguyên.
-
-### B. Style đồng nhất cho toàn bộ trang công khai
-Module mới **`app/site_shell.py`** (dùng chung token, header, footer, logo "StudioAI."): `/`, `/pricing`, `/docs`, `/terms`, `/privacy`, `/refund`, `/acceptable-use`, `/disclaimer`, `/about`, `/contact` — **cùng 1 style, cùng 1 logo, cùng 1 header/footer**. Header nav: Trang chủ · Tính năng · Tài liệu · Bảng giá + nút "Vào Dashboard →"; footer: toàn bộ chính sách + support (nếu admin đặt link Zalo/Facebook).
-
-### C. Sửa cấu trúc & giao diện tool
-1. **Tool ở `/dashboard`** (không đổi API nào) — logo sidebar giờ **trở về `/`** (bấm logo).
-2. **Hỗ trợ chỉ còn Zalo & Facebook**, icon đúng logo nền tảng (SVG Zalo xanh + Facebook `f`), luôn hiện cạnh tên/credit; bấm khi chưa cấu hình → toast chỉ vào tab Admin → "Liên hệ hỗ trợ". **Bỏ nút Trợ lý AI và Telegram.**
-3. **Nav có hàng liên kết nhanh ở trên** (bỏ theo yêu cầu "1 vài cái lên trên nav"): 📚 Tài liệu · 📝 Điều khoản · 🛡️ Nội dung · ✉️ Liên hệ, có hiệu ứng hover.
-4. **Chatbot nổi bật hơn**: nút tròn vàng gold 62px, glow pulse + chấm xanh "đang online"; **bong bóng gợi ý tự hiện mỗi ~11 giây** ("Bạn có mắc nào không?", "Bạn cần mình hỗ trợ gì không?"…), bấm vào là mở chat; tự ẩn sau 7s.
-5. **Animations mượt**: `rise` cho các phần tử trong trang (stagger nth-child), `pop` cho item đang chọn, hover lift cho card/chuột, `.qs:hover` scale icon, `ti` trượt vào, `.chat-fab.on` khi mở, tôn trọng `prefers-reduced-motion`.
-
-### D. Đăng ký yêu cầu SỐ ĐIỆN THOẠI + xác minh OTP
-- **Backend:** `app/otp.py` (validate VN `03x/05x/07x/08x/09x`, chuẩn hóa `+84→0`), bảng **`phone_otps`** (migration **0013**, hash sha256, TTL 5 phút, tối đa 5 lần nhập, giới hạn 5 lần gửi/giờ), gửi qua **ESMS.vn** (`ESMS_API_KEY`, `ESMS_API_SECRET`, `ESMS_BRANDNAME`, `ESMS_CONTENT`).
-- Endpoints mới: `POST /api/auth/verify-phone` (xác minh → trả token), `POST /api/auth/resend-otp` (rate-limit); `register` giờ **bắt buộc `phone`**; `login` chặn `403 + need_verify` khi chưa xác minh; trùng SĐT → **409**.
-- **Quy tắc an toàn:** `APP_ENV=production` + chưa có `ESMS_*` → đăng ký trả **503** (không cho mở đăng ký giả); chỉ dev/staging mới tự xác minh.
-- **UI:** form đăng ký thêm ô SĐT; sau đăng ký → bước nhập OTP (ô 6 số, "Gửi lại mã", "Xác minh & đăng nhập").
-- Migration thử trên **bản copy của DB thật** → lên **0013**, user cũ giữ nguyên được đăng nhập (phone_verified=1 mặc định cho dữ liệu cũ).
-- Tests: `tests/test_phone_otp.py` (8 test) + cập nhật `conftest` (APP_ENV=dev + phone), `test_features`, `test_more`, `test_e2e`, `test_ui`, kỳ vọng migration `0013`. **pytest 203 passed, 7 skipped.**
-
-### E. Bảng giá công khai — ĐỒNG BỘ ĐÚNG giá admin đặt
-`/pricing` giờ render **động từ DB** (`pricing_items` + model đang bật trong `app_models`):
-| Model thực tế (lấy từ DB copy của bạn) | Giá |
-|---|---|
-| Veo 3 (clip) | 5.7 credit |
-| gemini-omni-flash-preview (clip) | 10.05 credit |
-| Gemini Image (ảnh) | 0.16 credit |
-| DeepSeek LLM | 0.03 credit |
-| Minimax-M3 | 0.05 credit |
-| glm-5.3-flash | 0.01 credit |
-| claude-opus-5 | 0.01 credit |
-
-Trang nêu rõ: 1 credit = 1.000đ, **video tính theo clip (request)**, **ảnh theo ảnh**, **LLM theo lần gọi**, **TTS theo câu**, cảnh lỗi không tính phí, credit chưa dùng hoàn trong 7 ngày, lịch sử dòng tiền trong tab Nạp credit. **Không bịa số nào ngoài dữ liệu admin đã đặt.**
-
-### F. ⚠️ CHƯA LÊN DOMAIN — domain hiện còn trộn lẫn
-- `index.html` phục vụ từ đĩa → UI mới đã lên tay thật, nhưng **route Python mới** (`/dashboard`, `/docs`, `/pricing`, `/welcome`) chưa được nạp (PID 17364 chạy code lúc 13:13) → **nút/chức năng dựa vào route mới sẽ 404/500** (đăng ký, chat history, admin "Lưu liên hệ hỗ trợ", nút 🗑 chat).
-- **Đăng ký trên domain sẽ bị 503** cho tới khi bạn điền `ESMS_API_KEY`/`ESMS_API_SECRET` (đăng ký ESMS) — hoặc báo tôi cho phép tự xác minh tạm thời ở máy nhà.
-- Tôi không restart, không đụng domain.
+  SAU:
+    prompt = kf.get("video_prompt")  # ưu tiên prompt motion từ LLM
+    if not prompt:
+        prompt = kf.get("source_image_prompt") or kf.get("image_prompt")
+    # Inject identity lock vào đầu prompt để anchor nhân vật
+    identity = kf.get("identity_lock", "")
+    if identity and identity not in prompt:
+        prompt = f"{identity} {prompt}"
 
 ---
 
-## 0.5. PHIÊN 2026-11-11 (đợt 6) — Fix 4 điểm user phản hồi (#1..#4)
+## 📋 Danh Sách File Cần Sửa
 
-> **CHƯA LÊN DOMAIN** — code chỉ trên máy dev. pytest **203 passed, 7 skipped**; node --check OK.
-
-### #1. Các tab tài liệu/chính sách chuyển từ nav (sidebar tool) xuống FOOTER
-- **Bỏ hẳn dải icon 4 mục** (📚 Tài liệu · 📝 Điều khoản · 🛡️ Nội dung · ✉️ Liên hệ) ở đầu sidebar tool.
-- Thêm **footer cố định ở đáy cột chính** (`.page-foot`): 📚 Tài liệu · Điều khoản · Bảo mật · Nội dung · Hoàn tiền · Miễn trừ TNC · Bảng giá · Liên hệ + dòng "© VideoAI Studio".
-
-### #2. Tab Bảng giá đồng bộ style + chi tiết từng model (đơn vị tính, đồng bộ admin)
-- `/pricing` dùng **chung site_shell** như mọi trang (cùng header/footer/token).
-- Mục **"Giá từng model"** render **động từ DB**: mọi model admin đang bật, cột **Model | Đơn vị tính | Giá bán | Quy đổi** (Veo 3 5.7 credit/clip ≈ 5.700đ · Gemini Image 0.16/ảnh ≈ 160đ · DeepSeek 0.03/lần gọi ≈ 30đ…). **Lấy đúng bảng `pricing_items` — đồng bộ tab Bảng giá & Model của admin.**
-- Kèm "Cách tính credit" (video theo clip, ảnh theo ảnh, LLM theo lần gọi, TTS theo câu, cảnh lỗi miễn phí) + "Nạp tiền & hoàn tiền".
-- *Lý do user vẫn thấy bản cũ:* live domain phục vụ **Docker image cũ** — xem mục F.
-
-### #3. Chưa đăng nhập → /dashboard tự chuyển về trang chủ (user đã chọn phương án này)
-- `/dashboard` **chưa đăng nhập** → client-side redirect về `/`; chỉ `/dashboard?login=1` mới hiện form đăng nhập.
-- Mọi nút "Vào Dashboard →" (header, landing, legal, pricing) → `/dashboard?login=1`; sau khi đăng nhập tự `replaceState` về `/dashboard`.
-- **Verify Playwright E2E:** (1) `/dashboard` chưa đăng nhập → `http://127.0.0.1:8010/`; (2) `/dashboard?login=1` → form hiện; (3) đăng ký xong → vào dashboard, URL sạch `/dashboard`; (4) bấm logo → `/`. 0 pageerror.
-- `tests/test_ui.py` trỏ về `/dashboard?login=1`. **203 passed.**
-
-### #4. Bỏ trang "Tài liệu" riêng (trùng mục Tài liệu & chính sách ở trang chủ)
-- **Xoá route/hub `/docs`** → `/docs` giờ **301 → `/#docs`**; nav "Tài liệu" mọi trang trỏ `/#docs`; legal page bấm "Tài liệu" cũng nhảy `/#docs`.
-
-### F. ⚠️ TÌNH TRẠNG DOMAIN — toàn bộ code hôm nay CHƯA LÊN domain
-Verify bằng `curl --resolve studioai.id.vn:443:104.21.19.240`: container Docker **`web-1`** (image `web:latest`, **build ~11:30 sáng — trước toàn bộ công việc chiều nay**) đang phục vụ `/`:
-`/dashboard` → **404** · `/docs` → **Swagger UI** · `/pricing` → **404** · `/terms` → **404** · `/api/support` → **404** · `/api/chat/history` → **404** · đăng ký → **500** (code image cũ không có cột phone trong khi DB đã migrate 0013).
-→ **Không có gì từ phiên chiều nay chạy trên domain**; ảnh user chụp là từ instance local (cổng 8002, code hiện tại). Muốn domain nhận bản mới: rebuild image + recreate container — **chỉ làm khi user ra lệnh.**
+| File | Thay Đổi | Mức Độ Ưu Tiên |
+| app/autopipeline.py | character reference chưa forward; prompt ảnh tĩnh dùng thay video prompt | ✅ Đã nối subject_reference, ưu tiên video_prompt, khóa prompt 2026-11-13; chờ test gateway thật |
+| app/minimax.py | payload video bỏ qua lỗi đọc subject_reference | ✅ Đã fail closed, test payload OpenAI-style 2026-11-13; chờ test gateway thật |
 
 ---
 
-## 0. Trạng thái tổng quan
+## ⚠️ Lưu Ý Quan Trọng
 
-```
-pytest tests/ -q  →  223 passed, 7 skipped, 0 errors   (lần chạy mới nhất: 2026-11-11, đợt 7)
-alembic_version = 0013   (migrations: 0012 chat_messages, 0013 phone_otp)
-```
+1. KIỂM TRA API MINIMAX: Trường "role": "subject_reference" phải được MiniMax H3
+   API hỗ trợ. Chạy scripts/check_minimax.py để xác nhận.
+   Nếu API không hỗ trợ subject_reference → chỉ còn cách dùng first_frame tốt hơn.
 
-**Verify 2026-11-11 (cuối ngày, sau đợt 2→6):**
-- **pytest 203 passed, 7 skipped** — gồm 11 test `test_subtitles_ai.py` (wrap, model map, refine giữ mốc TG, dịch batch lệch, merge, API E2E mock ASR+LLM) + 8 test `test_phone_otp.py` (normalize SĐT, register cần phone, production thiếu SMS → 503, OTP flow end-to-end, resend rate-limit, trùng SĐT 409). Cập nhật `test_ui.py` trỏ về `/dashboard?login=1`.
-- **Migration trên bản copy DB thật** → lên **0013**, user cũ (21) `phone_verified=1`, không ai bị khoá.
-- **Playwright full journey**: đăng ký (ô SĐT) → vào dashboard → sidebar thu gọn → logo → `/`; 0 pageerror.
-- **Live vs local** (curl --resolve kiểm chứng): domain phục vụ Docker image `web:latest` build ~11:30 sáng — toàn bộ code chiều nay CHƯA LIVE (xem mục H).
-- **HF account vẫn 402**; **Bug 17** (git rebase dở — không đụng); **Bug 25** (SePay 401 — để sau).
+2. GATEWAY VILAO: Nếu dùng vilao.ai gateway (OpenAI-compat), cần kiểm tra
+   gateway có forward field subject_reference đến MiniMax không.
 
-**Verify 2026-11-10/-11 (cũ):**
-```
-pytest tests/ -q  →  184 passed, 7 skipped, 0 errors   (lần chạy cũ: 2026-11-10 đợt 3)
-```
-
-- **Verify 2026-11-10 (đợt 3 — fix tính năng Tải MXH):** server 8001 = **PID 21828** — GET / 200 + OpenAPI 200; test live YouTube/TikTok/Facebook OK (chi tiết Bug 26). **Git vẫn rebase dở (KHÔNG đụng). Thanh toán (SePay) user yêu cầu ĐỂ SAU** — Bug 25 giữ nguyên trạng thái, không đụng.
-
-- **Verify 2026-11-10 (đợt 2, sau phiên fix bug cao→thấp):** server 8001 = **PID 18420** (restart sau fix backend) — GET / 200 + OpenAPI 200; `/api/video/hf-status` trả 401 khi chưa đăng nhập (đúng thiết kế). **Git vẫn rebase dở (KHÔNG đụng). Thanh toán (SePay) user yêu cầu ĐỂ SAU** — Bug 25 giữ nguyên trạng thái, không đụng.
-- **HF thử lại 2026-11-10:** account `luatnguyen` — `isPro:false, canPay:false, billingMode:prepaid`; **mọi route inference trả 402** (dịch Opus-MT, Whisper, chat); `.env` vẫn key sáng (đuôi `hzhO`); router có 126 model chat nhưng **không có Whisper/Opus-MT**. Dịch qua HF chỉ chạy được khi nạp credit/mua PRO, hoặc đổi engine (Vilao LLM ~10đ/câu — chờ user duyệt).
-- **Quét dự án 2026-11-10 (2 agent song song, read-only):** frontend `static/index.html` (3794 dòng, 13 tab, mọi fetch đều khớp endpoint backend, không route mồ côi); backend 7 router ~90 route, không có route trùng path/method, migration 0001→0011 liên tục. Chi tiết mục 1.6.
-- **Bug mới fix phiên này:** Bug 21 (500 khi render template AI video — `pricing.video_cost` không tồn tại), Bug 22 (f-string backslash → SyntaxError trên Python 3.11 → Docker build vỡ), Bug 23 (DOWNLOAD_PROGRESS mất user_id), Bug 24 (XSS danh mục Template của tôi) + dọn dead code nhỏ + requirements thiếu numpy/psutil. Xem mục 2.
-- **2026-11-10 (sáng, session f8c99b6e):** phân tích đối thủ lamclip.com (mục 7) + **debug webhook SePay** — kết quả chưa xong, xem mục 2 Bug 25.
-- **Verify 2026-11-09 (cuối ngày, sau fix launcher):** server 8001 = PID 7360 (đã cũ); SQLite `storage/app.db`: `pipeline_jobs`, `credit_ledger` tồn tại; alembic version = **0011**.
-- **2026-11-09 — Giá admin giữ nguyên:** từng **lỡ đặt `glm-5-3-flash` = 0.1** qua admin API; đã **REVERT về 0** theo yêu cầu "giá thì tôi set trong tab admin". Tool chỉ trừ theo giá admin đã set.
-- **Verify 2026-11-09 (đầu ngày):** pytest **168 passed, 7 skipped, 8 errors** — 8 errors ở `tests/test_ui.py` do thiếu redis-server/celery **và** selector lỗi thời sau redesign 05/11 (Bug 12). **Server 8001 KHÔNG chạy** lúc verify đầu ngày.
-- **Verify 2026-11-08:** Bug 1–11 fix; pytest **168 passed**. **Server 8001 = PID 13468** — GET / 200, OpenAPI 200. **Billing video theo REQUEST** (Veo = 3000đ/request ≈ 3 credit/clip; không tính giây). **Storyboard bám mốc giây model** (Veo: 4/6/8s). **Chế độ "🎨 Chỉ gen ảnh"** + **"📝 Text → Video"** + **"🖼 Ảnh → Video"** (không storyboard, 1 clip Veo) — đã có trên UI + test + smoke. **Batch COPY HÀNH ĐỘNG CHƯA LÀM** — chờ user chọn engine (vilao không có model motion-transfer; local GPU 4GB không chạy MimicMotion).
-- 8 errors đều ở `tests/test_ui.py` — nguyên nhân: **máy thiếu redis-server/celery** (Playwright Chromium đã cài). Không phải bug code.
-- **Server 127.0.0.1:8001 KHÔNG CÒN CHẠY** (verify 2026-11-09: không có process listen port 8001; lần chạy cuối PID 13468 từ 2026-11-08 với code mới nhất). Khi làm tiếp: khởi động `python run.py --port 8001` rồi verify GET / + OpenAPI trước khi test UI.
-- **UI đã chụp Playwright full journey** (đăng ký, toàn bộ tab user + admin, desktop + mobile) — ảnh `outputs/ui_preview_*.png`; không còn xác nhận "chỉ kiểm cú pháp". 8 UI test vẫn lỗi — nguyên nhân gốc: máy thiếu `redis-server`/`celery` (FileNotFoundError) **và** selector của `tests/test_ui.py` đã lỗi thời sau redesign 05/11 (Bug 12, verify 2026-11-09) — cài Redis xong cũng chưa chắc pass cho tới khi viết lại test.
-
-**⚠️ QUY TẮC RESTART:** sau MỖI lần sửa backend, bắt buộc restart server 8001 (server cũ chạy code cũ → lỗi "vẫn còn" dù đã fix — user đã gặp 05/11). Kiểm tra process giữ port 8001 (`Get-NetTCPConnection -LocalPort 8001 -State Listen`), xem StartTime, xin phép user rồi restart, verify GET / (200) + `/openapi.json`.
+3. FALLBACK STRATEGY: Nếu subject_reference không được hỗ trợ:
+   - Ghép ảnh character + keyframe thành 1 ảnh composite → dùng làm first_frame
+   - Thêm mô tả chi tiết nhân vật vào đầu video prompt (identity_lock)
 
 ---
 
-## 1. ✅ SESSION 2026-11-05 → 2026-11-06 ("tối ưu dự án") ĐÃ LÀM ĐƯỢC (tóm tắt)
+## 🐛 Các Bug Cũ (từ scan trước) — Chưa Fix
 
-1. **Video final không đủ thời lượng** (yêu cầu 20s chỉ ra 8.5s) — `_run_editing` rewrite: scale thời lượng cảnh theo kế hoạch về đúng tổng, giãn chậm ≤1.3x + đóng băng phần còn lại, **chuyển cảnh xfade/acrossfade 0.4s**, loudnorm, đo ffprobe và **tự edit lại ≤3 lần** nếu chưa đủ, cắt nếu dài.
-2. **Cảnh gen video lỗi bị bỏ** → final rời rạc, chỉ còn vài đoạn — nay cảnh còn ảnh keyframe được dựng thành đoạn **Ken Burns** (zoom/pan, không tốn credit); chỉ bỏ khi mất cả ảnh lẫn video.
-3. **Bug `apad=whole_duration` không tồn tại trong ffmpeg** → `apad=whole_dur` (cảnh có audio/TTS sẽ crash).
-4. **Gen video fail 100% "corrupt download"** — kiểm tra file nguyên vẹn gọi `ffprobe -xerror` (sai option) → đổi sang `ffmpeg -v error -xerror`.
-5. **Gateway 503 "upstream overloaded" đánh hỏng cảnh** — poll truy vấn 429/5xx giờ coi là "đang xử lý", thử lại thay vì fail; 4xx thật mới báo lỗi. (Cả nhánh OpenAI-style lẫn MiniMax v2.)
-6. **Veo nói lời khác kịch bản** (nói "salad nhiệt đới" thay vì bún chả) + **khẩu hình lệch** — nhét đúng câu thoại kịch bản vào prompt video (`lip-sync exactly to this line`); bật TTS → model không nói (miệng câm) → TTS lồng tiếng đúng chữ và không lệch khẩu hình.
-7. **Lưu/xem/xóa "Template của tôi"** — tab fetch `/api/templates?mine=1`, mục "🎬 Dự án đã lưu" hiển thị video final; bấm xem chi tiết (video, ý tưởng, model, kịch bản, ảnh/video phôi) + "Dùng lại với cấu hình này" (điền sẵn form Trợ lý AI); thêm endpoint `DELETE /api/templates/{tid}` (chặn 409 nếu template đang được dùng) và `DELETE /api/generations/{gid}` + nút 🗑 trên từng thẻ.
-8. **Pipeline tự động lưu vào Template của tôi** khi xong (server-side, idempotent) — bấm Lưu sau đó không tạo trùng; UI đổi nút thành "✅ Đã tự động lưu".
-9. **Thời lượng ô nhập = thời lượng VIDEO FINAL** (không phải mốc clip của model) — chips 15/30/60/90/120 + custom 10–300s; label cập nhật.
-10. **Skill `video-editor`** tạo mới (SKILL.md + `references/ffmpeg-recipes.md` mục Ken Burns + `scripts/check_video.py`) — kích hoạt khi sửa phần dựng video.
-11. **[TÍNH NĂNG MỚI 2026-11-05] Chế độ "Review sản phẩm — biến hình trang phục"** trong tab Trợ lý AI:
-    - Người dùng upload **2 ảnh**: nhân vật (đang mặc đồ gốc) + bộ đồ/sản phẩm muốn review, chọn **thời lượng hook** (1–10s, mặc định 3s).
-    - LLM tạo kịch bản cấu trúc bắt buộc: **Hook** (đồ gốc, đúng số giây user chọn) → **Biến hình** (đồ gốc → đồ review) → **Review** (thoại đánh giá chất liệu/form/cảm giác) → **Chi tiết sản phẩm** (cận cảnh, không nhân vật). Mỗi cảnh có trường `giai_đoạn` (hook | bien_hinh | review | chi_tiet_san_pham).
-    - `vilao_image.gen_image` hỗ trợ **nhiều ảnh tham chiếu** (`image[]` kiểu OpenAI edits); gateway từ chối → tự **ghép 2 ảnh cạnh nhau bằng ffmpeg** (768×1024 mỗi panel) và gửi lại kèm ghi chú composite.
-    - Chọn ảnh tham chiếu theo giai đoạn: hook → chỉ ảnh nhân vật; biến hình/review → nhân vật + bộ đồ; chi tiết sản phẩm → chỉ ảnh bộ đồ (làm first frame video).
-    - Prompt video: cảnh biến hình thêm "OUTFIT TRANSFORMATION..."; cảnh review khóa "keeps the reviewing outfit"; identity lock cho phép đổi trang phục theo kịch bản (giữ mặt/tóc).
-    - API `POST /api/assistant/pipeline` thêm `mode`, `outfit_image_url`, `hook_seconds` (422 nếu review thiếu 1 trong 2 ảnh). UI: select "Chế độ tạo video" + ô upload bộ đồ + ô thời lượng hook (ẩn/hiện theo mode); "Dùng lại" từ Template điền sẵn mode/hook. Auto-save template lưu thêm mode/outfit/hook.
-    - Test mới: `tests/test_review_outfit.py` (9 test — multi-ref gateway, storyboard review, chọn ref theo giai đoạn, render cảnh sản phẩm, validate API). pytest 134 passed.
-12. **[TÍNH NĂNG MỚI 2026-11-05] Tab "📦 Gen hàng loạt — Review từng sản phẩm"**:
-    - Người dùng upload **1 ảnh nhân vật** + **nhiều ảnh sản phẩm** (chọn nhiều ảnh hoặc **1 file .zip** — server tách ảnh, lọc file rác/__MACOSX, tối đa 20 ảnh, mỗi ảnh ≤15MB, ZIP ≤40MB).
-    - `app/batchpipeline.py` (mới): `BatchJob`/`BatchItem` in-memory; worker chạy **tuần tự 1 sản phẩm/lần** — mỗi sản phẩm tạo pipeline job `review_outfit` (nhân vật chung + ảnh sản phẩm làm outfit) và chạy đồng bộ; sản phẩm còn lại trạng thái "hàng chờ"; **mỗi sản phẩm chỉ xử lý 1 lần** (dedupe URL trùng).
-    - Sản phẩm xong **tự động lưu vào "Template của tôi"** (pipeline auto-save đã có) — item trả về đầy đủ thông tin: kịch bản (số cảnh/giây/bảng cảnh), ảnh keyframe, template id; **không trả video final trong tab batch**.
-    - API: `POST /api/assistant/batch/extract` (zip/ảnh → URLs), `POST /api/assistant/batch` (start, validate model bật + ảnh tồn tại), `GET /api/assistant/batch/{id}/status` (poll 2.5s), `POST /api/assistant/batch/{id}/cancel` (dừng sản phẩm đang chạy + hủy hàng chờ).
-    - UI: tab mới trong sidebar; form model/duration/hook/ratio/language/voice; danh sách từng sản phẩm với badge trạng thái + progress + bảng kịch bản + ảnh keyframe + nút "Xem trong Template của tôi".
-    - Test mới: `tests/test_batch.py` (7 test — tuần tự, hủy, extract zip/ảnh, dedupe, validate). pytest 141 passed. Fix trong quá trình: worker ghi đè trạng thái `cancelled` → chỉ set `running` khi chưa hủy.
-13. **[THAY ĐỔI LỚN 2026-11-05] Loại bỏ hoàn toàn bước dựng video final — tool chỉ tạo clip phôi**:
-    - User xác nhận: sau khi gen, khách tự edit; tool KHÔNG nối cảnh/xfade/loudnorm/Ken Burns/kéo dài đóng băng.
-    - Backend: xóa `_run_editing` + `_video_duration` + `_probe_video` + `_audio_chain`; bước 4 pipeline chỉ còn kiểm tra ≥1 clip thành công (không thì job failed, không trừ credit cảnh lỗi); job done kể cả khi một số cảnh lỗi (khách tải các clip tốt); TTS từng cảnh vẫn giữ.
-    - Auto-save: dự án **raw** được lưu (title từ ý tưởng, thumbnail = keyframe đầu, `template_schema.clip_only=true`, `base_video_url=""`); nút "✅ Đã tự động lưu" trong tab Kết quả. Không còn trường `final_url`/`final_duration` trong result.
-    - UI: bỏ tab "🎬 Final"; tab cuối → "🎥 Video phôi (tự edit)": lưới từng cảnh với nút **⬇ Tải clip** + TTS download từng cảnh; thông báo "tool không dựng final"; kịch bản/ảnh giữ nguyên; chuyển tự động sang tab Clips khi xong; nhãn "Thời lượng kịch bản" (kịch bản, không phải final); tiêu đề trang → "Trợ lý AI — Tạo Clip Phôi & Ảnh Phân Cảnh".
-    - Template của tôi: dự án raw hiện **poster ảnh** (keyframe) thay video (video final không còn); hover hiện "👁 Xem chi tiết" + "🗑 Xoá"; Xem chi tiết hiện ảnh poster + **ghi chú vàng** "không có video final — tự edit", bảng kịch bản, models đã dùng, từng cảnh kèm ảnh/clip/**nút ⬇ Tải clip** và ⬇ Thoại TTS; vẫn "Dùng lại với cấu hình này".
-    - Test mới `tests/test_raw_clips.py` (pipeline done khi đủ clip / failed khi toàn cảnh lỗi; không final_url; auto-save được gọi). pytest **143 passed**. Verify preview seed: `outputs/ui_raw_list.png`, `ui_raw_detail.png`, `ui_raw_ai.png`.
-14. **[REDESIGN 2026-11-05] Toàn bộ giao diện — dark premium + vàng gold + glassmorphism**:
-    - Cài 2 skill từ claudeskills.info: **ui-ux-pro-max** (`.claude/skills/ui-ux-pro-max`) + **impeccable** (`.claude/skills/impeccable`).
-    - Hướng thiết kế: đen than ấm (nền than + aurora nhẹ), **vàng gold** (gradient, glow, line), **glassmorphism** (sidebar/topbar/cards/modal blur), **Plus Jakarta Sans**, spacing 4px scale, radius 10/14px, focus ring gold, reduced-motion tôn trọng, responsive: 1100/900/640px (ẩn sidebar thành thanh icon-only rồi thanh ngang sticky).
-    - Giữ nguyên toàn bộ ID/JS logic, mọi tab/chức năng; chỉ thay token màu/spacing/typography + sửa 2 lỗi thực tế: checkbox `width:100%` tràn hàng trong nhãn, chip thời lượng dùng màu xanh lá/cam (đổi sang gold/neutral) và nhãn checkbox bị uppercase wrap chữ.
-    - Đăng nhập: card kính + orb vàng; sidebar logo dùng SVG vàng (bỏ emoji 🎬); footer user pill viền gold.
-    - **Item video final + checkbox (05/11 cuối 3)**: thẻ "Dự án đã lưu" (và "Thành phẩm đã tạo") hiển thị video final làm mặt chính (video muted + `poster` = keyframe đầu), click video bật/tắt play, hover hiện thanh nút dưới đáy video (Xem chi tiết / Xoá — hoặc Dùng lại / Đổi tên / Tải / Xoá); cụm nút stopPropagation nên không mở nhầm detail; bàn phím Enter/Space kích hoạt xem chi tiết (role=button). Touch (hover:none) luôn hiện thanh nút. Checkbox toàn bộ tool làm lại thành custom gold (animated checkmark khi chọn, focus ring, disabled); radio cũng làm lại; dl-item bỏ inline override. Sửa lỗi selector `.tc-med > div` gán 64×64 cho `.tc-actions` (actions bị thu nhỏ/tràn khỏi card). Verify bằng seeded preview DB (`outputs/ui_mytpl_projects.png`, `ui_mytpl_hover.png`).
-    - **Buttons & product cards (05/11 cuối)**: buttons → bán kính 12px, gradient tối cao cấp, màu trạng thái mềm (ok/er/warn neon), icon-only `.btn-icon`; template/generation cards → media 16/9 vignette + ảnh/video zoom khi hover, placeholder "no preview" panel gold, overlay play gold, title clamp 2 dòng, footer action bar viền trên, hover lift + viền gold; batch item → viền trái vàng + ánh sáng sweep hover; history item → trượt ngang + viền gold; download cards nâng cấp hover lift. Sửa lỗi selector `.tc-med > div` khớp nhầm `.tc-over` (overlay bị thu thành ô vàng trên card không có ảnh/video).
-    - Verify: `node --check` OK; server trả nội dung mới; **chụp Playwright full journey** (đăng ký → tất cả tab user + admin, desktop + mobile) — ảnh `outputs/ui_preview2_*.png` (library/mytemplates/ai/batch/…). Layout batch đã sửa (.sec bọc thừa một div gây vỡ trang). 8 UI test vẫn lỗi vì **máy không có redis-server/celery binary** (Playwright Chromium đã cài).
-15. **[TÍNH NĂNG 2026-11-05] Tab tỉ lệ 9:16 (mặc định) / 16:9 / 1:1 — tự hiện khi có video**:
-    - Mọi item (Thư viện / Template của tôi — cả "Dự án đã lưu" lẫn "Thành phẩm đã tạo") hiển thị mặc định **9:16**; khi có ít nhất 1 item 16:9 thì tự sinh tab **16:9** (và **1:1** nếu có) — đếm số lượng mỗi tab, click chuyển, ẩn tab nếu chỉ 1 tỉ lệ. Video thiếu metadata trong headless → dùng `template_schema.aspect_ratio` (public/my templates) và `/api/generations` giờ **kèm `aspect_ratio`** (lookup từ template nguồn — join 1 lần cho ≤100 dòng). `preload="metadata"` để metadata nạp sớm.
-    - Preview tabs (Prompt / Ảnh / Video phôi) giờ **hiển thị dạng thẻ** (`.preview-tab` — icon, tiêu đề, mô tả nhỏ, gold khi active), tối đa 5 thẻ; grid Ảnh và Video phôi dùng class `.img-grid` / `.vid-grid`, **tối đa 5 thẻ/hàng**, responsive 4→2 cột; ảnh/video hiển thị **9:16**.
-    - **Prompt tab** giờ hiển thị bảng kịch bản + **`<textarea class="prompt-dump">` chứa TOÀN BỘ prompt**: kịch bản JSON đầy đủ + prompt ảnh/video từng cảnh (CẢNH/GIAI_ĐOẠN); nút **📋 Copy toàn bộ prompt** (clipboard API, fallback execCommand); textarea readonly monospace.
-    - **LLM tối ưu prompt giao tiếp bằng TIẾNG ANH** (system prompt viết lại tiếng Anh, giữ nguyên JSON schema tiếng Việt + image/video_prompt luôn tiếng Anh); **thoại/hành động/bible… phải trả lời đúng ngôn ngữ khách chọn** (Tiếng Việt hoặc English — từ `ap-lang`); **TUYỆT ĐỐI KHÔNG SUBTITLE/CAPTION/watermark/chữ trong mọi cảnh** (rule trong prompt + kẻm trong prompt video + prompt ảnh + `gen_keyframe_prompt`). `user_msg` cũng tiếng Anh.
-    - Verify: pytest **144 passed** (test mới `test_history_includes_aspect_ratio`); `node --check` OK; server 8001 restart (PID 16364); preview seed `outputs/ui_ratio_library.png`, `ui_ratio_library_169.png` — tab tỉ lệ + pill hiển thị đúng (9:16/16:9/1:1, ẩn/hiện tự động).
-
-### Bảng fix chi tiết (mỗi dòng = việc đã làm xong + cách verify)
-
-| Hạng mục | Bằng chứng |
-|----------|-----------|
-| **[FIX 2026-11-05] Video final ngắn hơn yêu cầu (20s → 8.5s)** | `app/autopipeline.py::_run_editing` viết lại: dựng từ clip phôi + scale thời lượng kế hoạch từng cảnh về đúng tổng `job.duration`; clip ngắn hơn được giãn chậm ≤1.3x (setpts + atempo) rồi đóng băng phần còn lại; xfade/acrossfade cho chuyển cảnh (tự lùi về nối cứng nếu xfade lỗi); loudnorm từng clip; cùng kích thước/fps 30/yuv420p. Đo final bằng ffprobe, thiếu thì tự edit lại (lặp ≤3 lần), dài thì cắt. `job.result["final_duration"]` + step hiển thị số thực. Verify: 2s+3s → 10.02s; tổng 5s phôi yêu cầu 20s → final 20.0s; 12s → 5.02s. pytest 125 passed. |
-| **[FIX 2026-11-05] Phần dựng/cắt ghép bỏ bớt cảnh lỗi** | Xác nhận dữ liệu thật: id 9 (2/4 cảnh fail) final chỉ giữ 2+4; id 10 (3/5 fail) final chỉ giữ 2+5. Fix: cảnh còn ảnh keyframe → dựng đoạn Ken Burns zoom/pan vào final (không gọi API); step báo "cảnh X dùng ảnh Ken Burns"; chỉ bỏ khi mất cả ảnh. Verify: kịch bản giả 3 cảnh (1 video + 1 chỉ ảnh + 1 mất hẳn) → final đủ 2 cảnh, 8.0s, có audio, yuv420p. pytest 125 passed. |
-| **[FIX 2026-11-05] Gen video lỗi "Khong co clip nao... corrupt download" (100% fail)** | Nguyên nhân: lệnh kiểm tra nguyên vẹn gọi `ffprobe ... -xerror` — ffprobe KHÔNG hỗ trợ `-xerror` (chỉ ffmpeg) → lệnh luôn lỗi → mọi video tải về bị cho là hỏng. Fix: `ffmpeg -v error -xerror -i file -f null -`. Verify: file thật → exit 0; file cắt 1/3 → exit 183; fake server tải tốt → OK; trả file rác → VideoError "corrupt download". pytest 125 passed. |
-| **[FIX 2026-11-05] Gateway 503 "upstream overloaded" đánh hỏng cảnh (cảnh 1,3)** | Nguyên nhân: poll truy vấn báo lỗi ngay khi HTTP ≥ 400, kể cả 503 tạm thời. Fix: 429/500/502/503/504 → state "pending" để poll tự thử lại (chặn bởi `minimax_max_wait`); 4xx thật mới raise. Áp dụng cho cả `_openai_query` và `query_task` (MiniMax v2). Verify stub client: 429/503 → pending; 401/404 → VideoError. pytest 125 passed. |
-| **[FIX 2026-11-05] Video nói lời khác kịch bản + khẩu hình lệch** | Nguyên nhân: Veo tự sinh audio nhưng prompt video không chứa câu thoại → tự bịa lời ("salad nhiệt đới" thay vì bún chả); TTS + Veo nói đè lên nhau → khẩu hình lệch. Fix: nhét đúng câu thoại trong prompt (`The character says this exact line: ... lip-sync exactly to this line`); bật TTS → model không nói (mouth closed); không thoại → no dialogue; escape dấu ngoặc kép. Cập nhật `tests/test_character_consistency.py` (assert câu thoại nằm trong prompt). pytest 125 passed. Chỉ áp dụng cho lần gen mới. |
-| **[FIX 2026-11-05] Đang gen video chuyển tab là mất** | Pipeline tự động lưu thành phẩm thành dự án private trong "Template của tôi" ngay khi dựng xong (server-side, idempotent qua `save_pipeline_template`, không tạo trùng; lỗi lưu không làm hỏng pipeline). UI: nút "💾 Lưu" → "✅ Đã tự động lưu". Lưu ý còn lại: job in-memory nên restart server giữa chừng vẫn mất tiến trình. |
-| **[FIX 2026-11-05] Xóa/lưu/… "Template của tôi" không hoạt động** | Tab "Template của tôi" giờ fetch `/api/templates?mine=1`, hiển thị mục **"🎬 Dự án đã lưu"** — preview = video final, bấm "Xem chi tiết & Dùng lại" mở panel (video final, ý tưởng, model đã dùng, bảng kịch bản, ảnh/video phôi) + "🔁 Dùng lại với cấu hình này" (điền sẵn form Trợ lý AI). Thêm `DELETE /api/templates/{tid}` (owner/admin; 409 nếu đang được generation dùng) và `DELETE /api/generations/{gid}` (owner/admin) + nút 🗑 từng thẻ. `save_pipeline_as_template` lưu đủ thông tin tái sử dụng vào `template_schema`. Verify TestClient: lưu → mine có dự án; xóa OK; xóa lại 404; xóa template đang dùng 409; user khác xóa 404. pytest 125 passed. |
-| **[FIX 2026-11-05] Ô "Thời lượng" bị hiểu là mốc clip của model, không phải độ dài final** | UI (static/index.html) đổi chips thành cố định 15/30/60/90/120s + custom 10–300s; label "Thời lượng video final (giây)"; bỏ logic đọc/ghi `supported_durations` của model ở UI người dùng (admin vẫn quản lý mốc clip model ở Bảng giá & Quản lý Model — chỉ dùng nội bộ). Backend `StartPipelineIn.duration` ge=1 le=300 khớp. pytest 125 passed. |
-| **[FIX 2026-11-05] `apad=whole_duration` không tồn tại trong ffmpeg** | Đổi thành `apad=whole_dur` ở `_audio_chain` + vòng kéo dài clip cuối; test nhánh TTS (audio riêng) OK. |
-| **Bug trùng `transcribe_video` + `_format_srt_time` trong videotools.py** | Chỉ còn 1 định nghĩa mỗi hàm (verify line 135/155). Không còn bản trùng. |
-| **[TÍNH NĂNG 2026-11-05] Review sản phẩm — biến hình trang phục** | API `/api/assistant/pipeline` nhận `mode=review_outfit` + `outfit_image_url` + `hook_seconds`; storyboard LLM bắt buộc cấu trúc hook→biến hình→review→chi tiết sản phẩm (trường `giai_đoạn`). `vilao_image.gen_image` gửi `image[]` nhiều ảnh; gateway từ chối → ffmpeg ghép 2 ảnh → thử lại. Chọn ref theo giai đoạn; prompt video khóa đổi outfit; identity lock cho phép đổi trang phục theo kịch bản. UI thêm chọn chế độ + upload bộ đồ + thời lượng hook. Verify: 9 test mới + pytest 134 passed; JS `node --check` OK. **Chưa test thật trên gateway vilao** (cần ảnh thật + gen thật, tốn credit; server 8001 chưa restart). |
-| **Model LLM/ảnh/video chuyển hẳn sang Vilao.ai gateway, admin CRUD model từ UI** | tests/test_admin_models + test_vilao_image pass. |
-| **Pipeline 1-click (storyboard → keyframe → video → concat) + chặn model bị tắt (403)** | tests/test_flow.py pass. |
-| **Billing VietQR/SePay/Casso, promotion, refund, sweeper** | tests pass. |
+| # | Bug | File | Trạng Thái |
+|---|-----|------|-----------|
+| 1 | Dead code (duplicate raise) | app/minimax.py line 155 | Chưa fix |
+| 2 | Thiếu faster-whisper trong requirements.txt | requirements.txt | Chưa fix |
+| 3 | Thiếu edge-tts trong requirements.txt | requirements.txt | Chưa fix |
+| 4 | INKSTONE_* vs VILAO_* mismatch trong docs | .env.example, README.md | Chưa fix |
+| 5 | Git merge conflict trong README.md | README.md | Chưa fix |
+| 6 | Silent exception handlers (pass) | videotools.py, assistant.py | Chưa fix |
+| 7 | cancel_pipeline truyền db=None | assistant.py | Chưa fix |
+| 8 | /api/generations/{id}/reuse endpoint thiếu | routers/ | Chưa implement |
+| 9 | UI/UX Redesign (Req 1) | static/index.html | Chưa implement |
 
 ---
 
-### 1.5. 📌 SESSION "Tối ưu dự án và fix bug" (a56526bd, 2026-11-08 → 2026-11-09) — diễn biến đầy đủ
-
-Transcript đã trích: 18 yêu cầu user, 238 tin assistant. Thứ tự việc đã làm:
-
-1. **Đọc lại session "tối ưu dự án" (06/11)** — tổng hợp: review_outfit (biến hình trang phục), tab Gen hàng loạt, redesign UI, bỏ editor final, tab tỉ lệ 9:16/16:9/1:1, prompt dump, LLM tiếng Anh. Việc cuối session bị interrupt: chuyển API key sang `.env` (sau này làm trong phiên này — Bug 9).
-2. **Cập nhật fix_bug** — tách mục 5 thành 2 bảng ✅/⬜ chống lặp; mục 3 thành bảng tính năng đầy đủ.
-3. **Fix Bug 1–8** (dead `raise`, requirements thiếu faster-whisper/edge-tts, README conflict, INKSTONE_*→VILAO_*, `db=None`, `except: pass` → logging) — pytest 144 passed.
-4. **Fix Bug 6 (route `/api/generations/{id}/reuse`) + Bug 9 (API key model admin vào `.env`, `env_upsert()`, `APP_ENV_FILE` trong conftest, sync tự migrate DB→.env)** — pytest 150 passed.
-5. **Quét tính năng toàn dự án** (mục 3, bảng A/B) — fix trong phiên: voice clone mount `/media/voices` (Bug 10), estimate chi phí trước khi gen, Promotions CRUD UI, progress creep, batch ETA + nghe thử, drag-drop upload, skeleton loading, wireFileInfo — pytest 154 → 158 passed. **Regression tự gây ra (Bug 9):** pipeline đọc `row.api_key` rỗng sau migrate → sửa dùng `adminmodels.creds()`.
-6. **TTS emotion engine** (A14) — ~28 tag cảm xúc vi/en → rate/pitch/volume; storyboard LLM bắt buộc tag `biểu_cảm`; cue EN nhúng video prompt; 4 demo mp3 — pytest 157 passed.
-7. **Billing** — LLM charge + upfront 402 guard; endpoint `/api/admin/provider-costs` (kéo giá gốc API + cột ☁️ Giá gốc API / ≥ Hoà vốn / badge Lời–Lỗ); nút "💾 Lưu tất cả" cho model admin — pytest 162 passed. Phát hiện **tất cả giá tool = 0** → ưu tiên 0 (xem mục 5).
-8. **Billing video theo REQUEST** + **storyboard bám mốc giây model** (`app/provider.py`, `clip_steps_for_model`) + **chế độ `images_only`** — pytest 165 passed.
-9. **Chế độ `text_to_video` + `image_to_video`** (`expand_single_prompt`, `_run_single_clip_mode`) — pytest **168 passed**.
-10. **Copy hành động (mimic/motion transfer)** — CHƯA LÀM, chờ user chọn engine: vilao không có model motion-transfer (đã query `/v1/models` xác nhận), GPU Quadro P1000 4GB không chạy MimicMotion (cần ≥16GB). Engine khả thi: PixVerse Mimic (qua Segmind, có API + SDK), Kling 3.0 Motion Control (kie.ai/motioncontrolai.io), Replicate/fal.ai (~$0.05–0.15/clip), hoặc MiniMax H3 (chưa verify vilao có video-to-video). Video dài 20–30s+ → tách clip 5–10s chạy tuần tự rồi ghép, trừ credit theo đoạn.
-
-**Kết luận session:** không task nào còn bỏ dở giữa chừng; task duy nhất chưa xong là copy hành động — đã báo cáo + đề xuất, chờ user quyết.
-
----
-
-### 1.6. 📌 SESSION "Tổng kết dự án và fix bug" (2026-11-10) — diễn biến + kết quả quét
-
-> User yêu cầu đọc lại session tổng kết trước, fix bug, quét dự án (tính năng đã/chưa làm, vấn đề còn mắc), rồi cập nhật `fix_bug`.
-> Session trước cùng dạng: `21e3975f` (Tối ưu dự án và fix bug, kết thúc 10:59 10/11) — nội dung đã nằm đầy đủ trong mục 1.5 + Bug 19/20. Session sáng cùng ngày `f8c99b6e`: phân tích lamclip + debug webhook SePay (Bug 25).
-
-**Việc đã làm phiên này:**
-1. **Đọc lại session 21e3975f** (extract 893 dòng) — xác nhận mọi việc đã ghi trong `fix_bug`; phát hiện session sáng `f8c99b6e` (SePay webhook + lamclip) **chưa được ghi** → bổ sung Bug 25.
-2. **Verify trạng thái:** pytest 176 passed (trước fix), server 8001 đang chạy, git rebase dở nguyên trạng.
-3. **Quét frontend** (`static/index.html`, 3794 dòng): 13 tab đủ render + handler; **không fetch nào tới endpoint không tồn tại**; checklist 29 tính năng UI đều CÓ (chi tiết mục 3). Phát hiện: 1 XSS thật (Bug 24), vài dead state nhỏ, 1 nút thiếu try/catch.
-4. **Quét backend** (7 router, ~90 route): không route trùng path/method; migration 0001→0011 liên tục; phát hiện 2 lỗi crash: `pricing.video_cost` không tồn tại (Bug 21 — 500 ở `/api/generate` với template AI video, kể cả 2 template seed sẵn), f-string backslash (Bug 22 — SyntaxError trên Python 3.11 = Docker build vỡ); 1 lỗi bảo mật nhỏ (Bug 23 — progress download lộ giữa user).
-5. **Fix + test:** Bug 21–24 + requirements (numpy/psutil) + dead branch + docstring; **pytest 178 passed, 15 skipped**; restart server PID 17848.
-6. **Cập nhật `roadmap`** (jobs persistence, clone giọng, batch retry, transcribe local + dịch HF, backlog 8 mục đúng hiện trạng).
-
-**Phát hiện chưa fix (ghi nhận, mức thấp — xem mục 2.5):** owner-check media URL ở `/assistant/edit`, `/video/transcribe`, `/video/process`; `except: pass` trong persistence; dead config (MUSE_*, HUNYUAN_*, WAN21_*); `_voice_meta_dir` trùng 2 chỗ; `autopipeline.available_steps()` không dùng; dead state UI (`lastScript`, `window._pipelineImages*`); race setTimeout khi đổi tab nhanh; `pytest` nằm trong requirements runtime.
-
-**Đợt 2 (cùng ngày, user yêu cầu "sửa bug từ cao đến thấp" + thử lại HF):**
-1. **HF re-verify**: account `luatnguyen` (isPro=false, canPay=false, prepaid) — dịch/Whisper/chat đều **402**; key `.env` vẫn là key sáng (`hzhO`). HF path KHÔNG thể dùng free → chờ user nạp credit/PRO hoặc duyệt Vilao LLM làm translator (~10đ/câu).
-2. **Bug 12 ✅ xong**: `tests/test_ui.py` viết lại — 3 journey tự chứa (không redis/celery; chỉ uvicorn subprocess + Chromium), chạy thật **3/3 passed**; suite **181 passed, 7 skipped** (bỏ 8 test lỗi thời).
-3. **Mục 2.5 toàn bộ đã xử lý**: logging thay silent pass; xoá dead config; gộp `_voice_meta_dir` → `app/media.py::voice_meta_dir`; xoá `available_steps`/`_REVIEW_PHASES`; UI dead state + `bindImagePages()` + Audio.play catch; `pytest` → requirements-dev.txt; race UI verify lại = đã guard, không cần sửa.
-4. **Verify**: `node --check` OK, `py_compile` OK, pytest **181 passed**; restart server → **PID 18420**; GET / + OpenAPI 200; `/api/video/hf-status` 401 đúng thiết kế.
-5. **Thanh toán (SePay 401)**: user nói **để sau** — không đụng Bug 25; xoá dòng log chẩn đoán khi cần (giữ nguyên).
-
-### Bug 26 — Tải MXH: post ảnh TikTok không tải được + batch/preview thiếu TikWM fallback [CAO — tính năng] ✅ FIX 2026-11-10 (đợt 3)
-**Test thật (server tạm riêng, storage/DB temp, token test):** YouTube `watch?v=jNQXAC9IVRw` — resolve ✅ / download ✅ 723KB mp4; TikTok `@scout2015/video/6718335390845095173` — download qua TikWM ✅ 2.95MB; Facebook `/facebook/videos/10153231379946729/` — yt-dlp simulate OK ✅; Instagram — **cần cookie đăng nhập** (yt-dlp lỗi "empty media response") — không fix được nếu không có session user; batch TikTok + YouTube ✅ (trước đây batch TikTok không có TikWM → thất bại).
-**Các lỗi tìm thấy + fix:**
-1. **Post ảnh TikTok (slides) tải không được** — code cũ chỉ đọc `data.play`/`wmplay` (video), post ảnh không có trường đó → rơi về yt-dlp → 502. **Fix:** `_download_tiktok_tikwm` phát hiện `data.images` (list URL) → tải toàn bộ ảnh vào `outputs/` (`<stem>_<i>.jpg`) và trả `kind="images"` + danh sách `/media/...`; `/download` + `/batch-download` trả `{"images": [...], "media_type": "images"}`.
-2. **Không có fallback TikWM cho batch + preview** — chỉ có TikTok fallback ở `/download` đơn; batch/preview TikTok luôn qua yt-dlp (dễ bị chặn). **Fix:** cả 3 đường đều ưu tiên TikWM (video không watermark + post ảnh), yt-dlp là fallback.
-3. **UI không hiển thị kết quả ảnh** — thêm render grid ảnh (nút tải từng ảnh) ở 3 chỗ: kết quả `/download` đơn (`#dl-preview`), kết quả `dlOne`, kết quả `dlBatch` (không auto-triggerDownload hàng loạt ảnh).
-**Test:** `tests/test_download_tikwm.py` mới (3 test, mock `httpx` — video/photo-post/API-fail → fallback yt-dlp); **pytest 184 passed, 7 skipped**; `node --check` OK; server 8001 = **PID 21828**.
-**Chưa verify được live:** post ảnh TikTok thật (không tìm được link qua TikWM search — 403 Cloudflare; cần user dán 1 link post ảnh để test) — logic đã có unit test bao phủ. Video khác mạng xã hội khác (Twitter/X, Pinterest, Snapchat…) chưa test — yt-dlp hỗ trợ sẵn, khuyên user thử và báo lỗi từng link.
-
-**Bổ sung UI (2026-11-10 đợt 3, yêu cầu user):** khối mô tả **"Tool tải được những gì?"** ngay dưới ô dán link — liệt kê nền tảng hỗ trợ (TikTok/Douyin: video + post ảnh; YouTube: video/audio/playlist/kênh; FB Reels; X/Twitter, Pinterest, Snapchat — công khai qua yt-dlp), cảnh báo nội dung riêng tư/Instagram cần cookie, giới hạn 200/500MB và các định dạng trả về (MP4/m4a/JPG/PNG/WebP). **Fix hiển thị video đúng định dạng:** `.dl-thumb` và `.dl-video` đổi sang `object-fit:contain` (giữ nguyên tỉ lệ video dọc/vuông, không bị crop/méo), hover zoom nhẹ; mô tả đầu trang bỏ "Instagram" (không hỗ trợ thật). Verify: `node --check` OK + chụp Playwright qua server tạm (tab Tải MXH render đúng, không pageerror; ảnh đã xoá sau verify).
-
-**Bug 27 — FB Reel tải/resolve (2026-11-10 đợt 3):** user báo link `https://www.facebook.com/reel/1609377656889169` "tải về máy không được". Verify thật: yt-dlp **giải và tải được** (19MB AV1 + m4a; `/download` 68s, `/batch-download` 25s; AV1→H264 transcode FFmpeg OK) — server code KHÔNG lỗi. **Lỗi thật tìm được + đã fix:**
-1. **Resolve trả về card trống** (title/thumbnail/duration/views rỗng — `extract_flat` với FB reel không lấy đủ metadata) → user tưởng tool hỏng. **Fix:** sau `extract_flat`, nếu chỉ 1 entry và thiếu title → gọi full extract (`download=False`) để bù title/url/thumbnail/duration/like/comment/view. Verify: resolve trả đủ title + thumbnail + duration 111s (3.4s).
-2. **DASH tải theo mảnh** dễ đứt giữa chừng → thêm `"retries": 3, "fragment_retries": 3` vào ydl_opts của `/download`, `/batch-download`, `/preview`.
-3. Note: FB Reel chỉ có **AV1** (không H.264) → preview cần transcode (~40s cho 111s clip) — Chrome play AV1 native, chỉ Safari cần H264; giữ nguyên để tương thích.
-**Verify:** pytest 184 passed; restart server → **PID 10868** (GET / + OpenAPI 200). **Cần user test lại link này trên UI thật** — trước đó rất có thể lỗi do Facebook chặn tạm thời (403/checkpoint theo IP) chứ không phải code.
-
----
-
-## 2. 🐛 BUG — TRẠNG THÁI (cập nhật 2026-11-10)
-
-### Bug 1 — Dead code: dòng `raise` không bao giờ chạy [CAO — 1 dòng] ✅ FIX 2026-11-08
-**Cách làm:** grep `raise` trong `app/minimax.py` → thấy 2 dòng `raise` giống nhau liền nhau (154–155) → xoá dòng 155 bằng Edit (giữ dòng 154 có message "connection refused" đầy đủ hơn).
-**Verify:** pytest 144 passed (không test nào assert dòng đó riêng, nhưng import + suite chạy sạch).
-
-### Bug 2 — `requirements.txt` thiếu `faster-whisper` [CAO — lỗi deploy] ✅ FIX 2026-11-08
-**Cách làm:** grep `whisper` trong requirements.txt (không có) → thêm `faster-whisper>=1.0.0` (máy dev đã cài, chỉ thiếu khai báo).
-**Verify:** đọc lại file; không chạy pip install (máy đã có).
-
-### Bug 3 — `requirements.txt` thiếu `edge-tts` [CAO — lỗi deploy] ✅ FIX 2026-11-08
-**Cách làm:** xác nhận `app/tts.py` import edge-tts → thêm `edge-tts>=6.1.0` vào requirements.txt.
-**Verify:** pytest suite vẫn pass (tts test dùng mock).
-
-### Bug 4 — `README.md` còn merge conflict markers [TB] ✅ FIX 2026-11-08
-**Cách làm:** đọc đầu/cuối file → HEAD chỉ có tiêu đề `# VideoAI`, bản `d8b5e48` là toàn bộ nội dung → giữ bản nội dung đầy đủ, xoá 3 marker (`<<<<<<< HEAD`, `=======`, `>>>>>>> d8b5e48`), tiêu đề thành `# Video Template SaaS`.
-**Verify:** grep `<<<<<<<|=======|>>>>>>` trong README.md → 0 kết quả.
-
-### Bug 5 — Docs dùng `INKSTONE_*`, code đọc `VILAO_*` [TB] ✅ FIX 2026-11-08 + ✅ dọn test 2026-11-09
-**Phần 1 đã fix:** `README.md` (2 chỗ env + 1 chỗ mô tả), `.env.example` (đổi tên biến + thêm `VILAO_IMAGE_SIZE` khớp `config.py`), `run.py:63` check `VILAO_*` (không còn `INKSTONE_*`).
-**Phần 2 còn sót (được agent docs verify lại bằng grep):** `tests/conftest.py:15` (`INKSTONE_API_KEY=""` trong `os.environ.update` — env thật, không phải comment) và `tests/test_e2e.py:71` (`INKSTONE_BASE_URL`/`INKSTONE_API_KEY` làm env thật cho `FakeInkstone`, một dead code vì app đọc `VILAO_*`). Không còn chỗ code/docs đọc biến `INKSTONE_*` thật, nhưng env vẫn bị "rác" nên test có thể hành vi khác giữa các máy dev.
-**Cách fix:** xóa `INKSTONE_*` trong `tests/conftest.py:15` và `tests/test_e2e.py:71`; ép `VILAO_BASE_URL`/`VILAO_API_KEY` rỗng (hoặc trỏ fake server) trong `tests/conftest.py` để unit test không kế thừa env thật của dev.
-**Verify:** grep `INKSTONE` → chỉ còn trong comment mô tả lịch sử (pricing.py, ai.py) và file fix_bug; `tests/fakes.py` có `FakeMiniMax`/`FakeOpenAI` (viable); không còn `INKSTONE_*` làm env thật.
-
-### Bug 7 — `db=None` không nhất quán trong assistant.py [THẤP] ✅ FIX 2026-11-08
-**Cách làm:** đọc `_pipeline_job_or_403` → hàm **không dùng `db`** (chỉ get_job + check user) → chọn giải pháp gọn: bỏ tham số `db` khỏi chữ ký hàm, sửa cả 4 chỗ gọi (cancel dòng 359, status 367, result 373, save 386) thay vì thêm `Depends(get_db)` thừa vào 3 endpoint.
-**Verify:** pytest 144 passed (test pipeline status/cancel vẫn pass).
-
-### Bug 8 — Silent `except: pass` che lỗi [THẤP] ✅ FIX 2026-11-08
-**Cách làm:** grep `except.*:\s*$` + đọc ngữ cảnh từng chỗ → thêm `import logging` + `logger = logging.getLogger(__name__)` vào `videotools.py` và `assistant.py`; thay `pass`/`return "", ""` bằng `logger.warning(...)` kèm ngữ cảnh (HF transcribe, HF translate, TikTok download, ffprobe codecs, transcode web mp4 + dọn file tạm, ZIP entry hỏng, voice metadata hỏng). Chú ý không shadow biến `e` (ZipInfo) khi đặt tên exception (`exc`).
-**Verify:** pytest 144 passed; IDE diagnostics không còn unused-import.
-
-### Bug 6 — Chưa có route `POST /api/generations/{id}/reuse` [Req 3 roadmap] ✅ FIX 2026-11-08
-**Cách làm:** đọc `roadmap` Req 3 ("tạo request mới từ input cũ") + đọc `/generate` + `credit_guard` → (1) tách lõi `/generate` thành `_create_and_dispatch(body, bg, p, db)` dùng chung; (2) thêm `ReuseGenerationIn` (override tuỳ chọn) + endpoint `POST /generations/{gid}/reuse` gọi `credit_guard(payload, user, db)` trực tiếp rồi `_create_and_dispatch` — trừ credit/dispatch/log y hệt `/generate`; input cũ lọc bỏ key `_*`; owner-only 404.
-**Verify:** test mới `tests/test_reuse_envkeys.py`: reuse giữ nguyên input + trừ 1 credit; reuse với override (title/category/input); 404 khi user khác reuse; 402 khi hết credit. Full suite **150 passed**. Restart server → OpenAPI có `/api/generations/{gid}/reuse`.
-
-### Bug 9 — API key model admin lưu trong DB, chưa chuyển sang .env [TÍNH NĂNG DỞ DANG] ✅ FIX 2026-11-08
-**Phương án đã chọn (theo đề xuất được duyệt):** `.env` là nơi lưu key duy nhất, DB không giữ raw key, API không trả key nguyên văn.
-Key admin model giờ lưu trong `.env` dạng `MODEL_<ID>_API_KEY` (vd `MODEL_VEO_3_API_KEY`), **không lưu DB**:
-- `app/config.py`: thêm `env_upsert()` (ghi/xoá dòng trong .env + cập nhật env live), `model_key_env()`, `ENV_FILE` (override bằng `APP_ENV_FILE`).
-- `app/adminmodels.py`: `create/update` ghi key vào `.env`, DB `api_key=""`; `delete` xoá dòng key khỏi `.env`; `creds()`/`to_dict()` đọc key từ env (fallback DB cũ); `sync()` **tự migrate key cũ trong DB sang `.env`** rồi xoá khỏi DB — restart server là key hiện có tự chuyển sang `.env`.
-- `tests/conftest.py`: thêm `APP_ENV_FILE` trỏ file tạm → test không ghi vào `.env` thật.
-- `.env.example`: ghi chú quy ước `MODEL_<ID>_API_KEY`.
-**Verify:** test mới 2 test (key vào .env + không nằm DB + không lộ API; sync migrate key legacy). Full suite **150 passed**. Sau restart thật: `.env` có 7 dòng `MODEL_*_API_KEY` (veo-3, deepseek-llm, gemini-image, gemini-omni-flash-preview, minimax-m3, glm-5-3-flash, claude-opus-5); sqlite read-only xác nhận `app_models.api_key` rỗng hết; `.env` thật không bị test ghi vào.
-
-### Bug 12 — `tests/test_ui.py` dùng selector của UI CŨ, đã lỗi thời sau redesign 05/11 [CAO — lưới an toàn UI] ✅ HOÀN THIỆN 2026-11-10 (đợt 2)
-**Fix 2026-11-09:** `pytestmark = skipif` → 8 test ERROR→SKIP (Bug 13).
-**Fix 2026-11-10 (hoàn thiện):** viết lại hoàn toàn `tests/test_ui.py` theo UI mới — **3 journey tự chứa, không cần redis/celery** (fixture `web` chỉ spawn 1 uvicorn subprocess với SQLite/env tạm): (1) đăng ký + duyệt hết 9 nav tab user (chờ anchor text từng tab, thu pageerror/console.error — phải rỗng); (2) luồng VietQR (fill `#amt` → `#conv` hiện credit → `#qr-go` → QR trong `#qr-box` + countdown `#qr-time` + mã `NAP`); (3) đăng nhập admin + duyệt 4 nav tab admin (`users/adm/pricing/promos`). Selector lấy từ HTML thật (grep `#tab-rg/#a-u/#a-p/#a-e/#a-sub/.ni[data-nav]/#qr-go/#qr-box/#u-name`).
-**Verify:** `pytest tests/test_ui.py` → **3 passed** (Chromium thật); toàn suite **181 passed, 7 skipped**. Các journey cũ (template form kiểu cũ, AI tab `#sm`/`#vm`, pricing dashboard Inkstone) đã XOÁ — chúng test UI đã bị thay thế, không thể cứu vãn.
-
-### Bug 13 — `tests/test_ui.py` thiếu skip-guard (gây 8 ERROR thay vì SKIP) [TRUNG BÌNH] ✅ FIX 2026-11-09
-`tests/test_e2e.py:21-22` có `skipif(not (ffmpeg and redis-server and celery))`, nhưng `test_ui.py:9` import `stack` không áp dụng skipmark → stack fixture ném `FileNotFoundError` và cả file sinh 8 ERROR. **Fix:** thêm cùng `pytestmark` skipif vào `test_ui.py`. Verify: suite 168 passed, 15 skipped, 0 errors.
-
-### Bug 14 — Docker Compose port mismatch [CAO — deploy] ✅ FIX 2026-11-09
-`docker-compose.yml:7` map `"8000:8000"` + không set `PORT`, nhưng `Dockerfile:28` `EXPOSE 8001`, `:31` CMD `--port ${PORT:-8001}` → `docker compose up` dựng web chết im (không có listener ở 8000). **Fix:** đổi compose thành `ports: ["8001:8001"]` khớp Dockerfile/CMD. Verify: đọc lại file; **chưa build thử** (máy dev không có Docker daemon) — ghi nhận.
-
-### Bug 15 — `.env.example` lệch `config.py` & thiếu biến [CAO — docs/deploy] ✅ FIX 2026-11-09
-**Đã sửa:** `MINIMAX_BASE_URL` `https://api.minimax.io` → `https://api.xah.io` (khớp `config.py:99`); `MINIMAX_QUERY_PATH` → `/v2/query/video_generation/{task_id}` (path chính, khớp `config.py:103` + `minimax.py:33`; path cũ là fallback); bổ sung `HUGGINGFACE_API_KEY` (`config.py:95`), `SWEEP_INTERVAL_SECONDS`, `AI_TIMEOUT_SECONDS`, `AI_QUEUE_TIMEOUT_SECONDS`, `LOGIN_MAX_FAILURES`, `REGISTER_PER_HOUR`; **xoá section Muse** (feature đã bị xoá — code còn parse `MUSE_*` nhưng không ai đọc, dead config, ghi nhận); giữ/khôi phục đủ FAST/HEAVY_RENDER_COST, VietQR, Redis, MimicMotion, `MODEL_*_API_KEY`.
-**Verify:** `grep MUSE .env.example` = 0; `grep INKSTONE` toàn tests = 0; các section quan trọng còn đủ (`BANK_BIN`, `MIMICMOTION_DIR`, `MODEL_EXAMPLE`).
-
-### Bug 19 — Dịch & Phụ đề: hiển thị HF key + endpoint HF chết + local fallback hỏng [CAO — tính năng gần như không dùng được] ✅ HOÀN THIỆN 2026-11-10
-**Phát hiện (verify trực tiếp trên máy, 2026-11-09):**
-1. **UI hiển thị HF API key** (user không được xem): card "Cấu hình Hugging Face API" + input `hf-key-input` + badge `.env (masked_key)` — **user YÊU CẦU BỎ** → đã xoá toàn bộ khỏi UI (06/11).
-2. **HF Inference API chết**: `api-inference.huggingface.co` → ConnectError; `router.huggingface.co/v1/models` OK nhưng 126 models chỉ là chat models, **không có Whisper/Opus-MT**; `hf-inference/models/{whisper|opus}` → **401/402** (cần prepaid credits). Kết luận ban đầu: HF path không sửa được bằng đổi URL.
-3. **Local fallback faster-whisper hỏng**: `av 19.x` không còn tham số `metadata_errors` (faster-whisper 1.2.1 vẫn dùng) → `TypeError` trong `decode_audio`. **Đã fix** (09/11): decode PCM qua ffmpeg → numpy float32 → `model.transcribe(audio)`. Verify: 5s clip tiếng Anh → nhận dạng đúng, ~1.4s.
-**Update 2026-11-10 (HOÀN THIỆN cho user yêu cầu dịch + lồng tiếng):**
-- **User cung cấp HF API key mới** (`HUGGINGFACE_API_KEY` trong `.env`). Verify: key hoạt động cho /v1/models nhưng MỌI route inference trả **402 “Purchase pre-paid credits”** — chưa nạp credit thì không dịch được qua HF.
-- **Hoàn thiện tính năng dịch**: backend `TRANSLATE_LANG_CHOICES` (12 ngôn ngữ vi/en/zh/ja/ko/fr/es/de/ru/pt/th/id); `target_lang` trong `TranscribeIn`; `opus_model_for(src,tgt)` chọn model Helsinki-NLP/opus-mt-<src>-<tgt> động (input auto-detect; đích tự chọn từ dropdown UI). Fallback: giữ phụ đề gốc khi HF 402/không có key/unsupported pair; translation_status trả về UI (`ok|same_language|unsupported_pair|missing_key|failed`).
-- **Lồng tiếng TTS**: `/process` với `tts_voice≠""` → `download→parse SRT → gen_tts từng câu → adelay theo mốc thời gian → amix` vào video; giữ/tắt âm gốc (`keep_original_audio`/`src_volume`). UI có card "5. Lồng tiếng TTS" (chọn giọng như video gen, nghe thử giữ âm gốc tuỳ chọn, default tắt âm gốc).
-- **Verify 2026-11-10:** `GET /` 200, UI có đủ `sub-lang`, `dub-voice`, `chk-keep-origin-audio`, `loadDubVoices`; pytest **176 passed, 15 skipped**; server 8001 = PID 11928.
-- **Re-verify 2026-11-10 (đợt 2, user báo đã đổi key mới):** probe lại với key trong `.env` — **key vẫn là key sáng nay (đuôi `hzhO`), chưa được thay**. Account `luatnguyen`: `isPro=false`, `canPay=false`, `billingMode=prepaid`; **mọi route inference trả 402**: `hf-inference/models/Helsinki-NLP/opus-mt-en-vi` → 402, `opus-mt-vi-en` → 402, `openai/whisper-large-v3` → 402, `/v1/chat/completions` (Qwen/Qwen3.8-27B) → **402**. `/v1/models` 200 nhưng chỉ 126 model chat (providers deepinfra/featherless-ai/novita/zai-org/…), **không có Whisper/Opus-MT**. Kết luận: với account hiện tại, dịch/Whisper qua HF KHÔNG chạy được kể cả free — chỉ khi nạp prepaid credits hoặc mua PRO. Key mới nếu có phải lưu vào `.env` (hoặc admin cập nhật `HUGGINGFACE_API_KEY`) rồi probe lại.
-**Còn phụ thuộc:** HF credits (402) — dịch chạy được ngay khi account có credit/PRO. Phương án thay thế (cần user duyệt): dùng Vilao LLM (deepseek-llm, giá admin đã đặt ~10đ/câu ≈ 0.03 credit) làm translator — pipeline LLM đã có sẵn trong app.
-**Trạng thái môi trường:** `HUGGINGFACE_API_KEY` trong `.env` là key sáng nay; các secret khác giữ nguyên.
-
-### Bug 17 — Toàn bộ công việc mới CHƯA COMMIT; git rebase dở [CAO — rủi ro mất code] ✅ BỎ KHỎI DANH SÁCH 2026-11-11 (user quyết: không làm git lúc này vì đã publish domain; khi cần sẽ làm tiếp)
-**Trạng thái git (09/11):** detached HEAD trong interactive rebase; `git status` báo "no changes added to commit" với **tất cả** file mới untracked: `.github/`, `.claude/`, `.agents/`, `tests/`, `docker-compose.yml`, `requirements-dev.txt`, `scripts/`, `fix_bug`, `roadmap`, `outputs/`, `skills-lock.json`, `.dockerignore` + các file đã `M`/`D`. `.gitignore` thiếu `outputs/` → nguy cơ `git add -A` đưa rác vào commit sau. README clone branch trỏ về detached HEAD.
-**Hệ quả:** tri thức về hệ thống nằm trong `fix_bug` (untracked); một thao tác git sai là mất sạch.
-**Cách fix (chờ user duyệt):** hoàn tất rebase thủ công (`git rebase --continue`/`reflog`), hoặc làm nhánh mới từ HEAD/`main`; `git add` từng file cụ thể (thêm `outputs/` vào `.gitignore` trước); commit theo phong cách repo. **KHÔNG tự sửa git — cần user cho phép.**
-
-### Bug 20 — Lấy video ở "Template của tôi" thiếu bước hiển thị feature + không lưu tăng dần + không resume [CAO — trải nghiệm] ✅ FIX 2026-11-10
-**Vấn đề:** (a) "Dự án đã lưu" không thể chọn lại toàn bộ prompt/image/model để sửa/tạo tiếp            y (phải upload lại nhân vật/bộ đồ ảnh, model, aspect, TTS); (b) tất cả phương tiện công đoạn đều "mang lên cuối" (planning→keyframes→each-clip) thay vì lưu theo từng bước; nếu lỗi giữa chừng vẫn có thể tay dùng lại đồ hoạ bình thường.
-**Fix:** (1) `save_pipeline_template()` giờ luôn upsert — set `source_feature` + `stage` trong `template_schema`; gọi ngoài `_run_full_pipeline` (initial + sau planning + sau keyframing + sau rendering) và trong `_gen_scene_video` (sau từng video hoàn tất) → item lưu ở "Template của tôi" **ngay sau khi bấm gen**, các previews + prompts + ảnh được cập nhật realtime; (2) UI Dùng lại: chi tiết dự án có nút "Dùng lại với cấu hình này" giữ nguyên **prompt + ảnh nhân vật + ảnh bộ đồ (character_image_url/outfit_image_url)**; `window._prefillPipeline` mở rộng  fields; (3) Lỗi cảnh video xuất hiện trên UI chi tiết (bấm "Tạo lại N cảnh lỗi") thay cho `/retry-failed` nếu job vẫn con trong memory; (4) `renderBatch` giữ nguyên progress 2.5s để user có thể xem progress công đoạn.
-**Verify:** pytest 176 passed; node --check UI OK; server 8001 PID 11788; `GET /` 200 + OpenAPI 200.
-
-### Bug 18 — `README.md` lỗi thời nặng (agent docs flag, verify 2026-11-09) [CAO — docs] ✅ FIX 2026-11-09 (lần 2)
-**Trước:** giới thiệu "AI Inkstone (14 model)", section "Model AI (Intern Inkstone)" liệt kê 14 model không tồn tại (`deepseek-v4-pro-0813`...), mặc định `deepseek-v4-pro-0813`, bảng giá "MiniMax-H3 credit/giây", clone branch `claude/wizardly-lamport-qfjxhi`, "155 test", test table thiếu 10 file test mới, `/media` không ghi `voices/`, ngrok 8000, chưa kiểm chứng mention Inkstone.
-**Sau:** đổi hướng thành "Model AI (gateway Vilao + admin-managed)" — không built-in model, admin CRUD qua UI, key `.env`; bảng giá credit/**request**; clone branch bỏ branch; test count 168/15 skipped; bảng test đầy đủ 10 file mới; `/media` gồm `voices/`; ngrok và webhook `localhost:8001`; không còn dẫn chiếu Inkstone (`grep` 0).
-
-### Bug 21 — `/api/generate` với template AI video trả 500: `pricing.video_cost` không tồn tại [CAO — crash] ✅ FIX 2026-11-10
-**Phát hiện (agent backend, verify lại bằng `hasattr`):** `app/routers/generate.py:35` (`cost_of`) gọi `pricing.video_cost(db, duration, resolution)` cho `render_type` `ai_video`/`ai_dance`, nhưng `app/pricing.py` **không định nghĩa hàm này** → `AttributeError` → 500 ở `credit_guard` (generate.py:128). Ảnh hưởng mọi POST `/api/generate` dùng template `template_schema.ai_video`, **kể cả 2 template seed sẵn** (`main.py:34-51`) — đường template render MiniMax cũ (giữ compat stubs từ 03/11, hàm stub bị mất khi dọn code).
-**Fix:** thêm `pricing.video_cost(db, duration, resolution="768P")` — dùng dòng giá legacy `K_H3_768`/`K_H3_2K` nếu admin còn giữ (tính theo giây như đơn vị cũ), không có dòng → 0.0 (nhất quán với `price()` trả 0 cho key thiếu).
-**Verify:** 2 test mới `test_video_cost_zero_without_legacy_row` + `test_video_cost_scales_with_duration` (`tests/test_pricing.py`); pytest **178 passed, 15 skipped**.
-
-### Bug 22 — f-string chứa backslash trong biểu thức → SyntaxError trên Python 3.11 (Docker build vỡ) [CAO — deploy] ✅ FIX 2026-11-10
-**Phát hiện:** `app/videopipeline.py:163` có `f"{'\nGarment/product reference image...' + outfit_image_url if ...}"` — Python <3.12 **cấm backslash trong phần biểu thức f-string** (PEP 701 mới cho phép từ 3.12). `Dockerfile:1` dùng `python:3.11-slim` → import `app.videopipeline` trong container sẽ SyntaxError. Máy dev chạy Python 3.13 nên không thấy.
-**Fix:** tách chuỗi ra khỏi f-string (`f"\nGarment..."` ở phần literal + nối bằng `+`), không còn backslash trong biểu thức.
-**Verify:** `ast.parse(src, feature_version=(3, 11))` OK; `py_compile` OK; pytest 178 passed.
-
-### Bug 23 — `DOWNLOAD_PROGRESS` bị ghi đè không có `user_id` → lộ tiến trình giữa user [TB — bảo mật nhỏ] ✅ FIX 2026-11-10
-**Phát hiện:** `app/routers/videotools.py:567` ghi entry có `user_id` khi bắt đầu batch, nhưng 2 chỗ cập nhật (dòng 631 khi mỗi item xong, dòng 637 khi xong) **ghi đè dict không có `user_id`** → route `download-progress/{job_id}` (check ở 695-696) thấy owner `None` → mọi user đăng nhập đọc được tiến trình của người khác; owner gốc mất luôn sau lần cập nhật đầu.
-**Fix:** cả 2 chỗ cập nhật giữ `"user_id": user.id, "updated_at": time.time()`.
-**Verify:** py_compile + pytest 178 passed (route videotools chưa có test — khoảng trống test ghi ở mục 3).
-
-### Bug 24 — XSS: danh mục do user tự đặt chèn thẳng vào `onclick` ở Template của tôi [CAO — bảo mật] ✅ FIX 2026-11-10
-**Phát hiện (agent frontend):** `static/index.html:1255` `onclick="pgMyTemplates('${activeCat}')"` — `activeCat` lấy từ `/api/generations/categories` (user đặt qua `prompt()` ở dòng 1424) chèn RAW vào chuỗi JS trong attribute; `esc()` không cứu được vì entity được HTML-decode lại trước khi JS parse → danh mục chứa `');alert(1);//` sẽ chạy script.
-**Fix:** bỏ inline onclick → `<button id="btn-tpl-refresh">` + bind `rfBtn.onclick=()=>pgMyTemplates(activeCat)` cạnh delegation `[data-cat]` sẵn có (dùng closure, không nội suy dữ liệu vào chuỗi JS).
-**Verify:** `node --check` (extract `<script>` block) OK; server 8001 serve HTML mới.
-
-### Bug 25 — Webhook SePay "Gửi test" trả 401 (chưa xong — phía SePay gửi không có header auth) [CAO — nạp tiền tự động] ⬜ CHƯA XONG (verify 2026-11-10)
-**Diễn biến (session f8c99b6e sáng 10/11):** user dựng Cloudflare quick tunnel (`https://stereo-recommendation-fence-quick.trycloudflare.com`) trỏ về `http://127.0.0.1:8001`, cấu hình IPN SePay. Test từ httpbin.org OK, nhưng SePay → app trả **401**. Chẩn đoán ban đầu: **`scheme=NONE header_len=0`** → nút test có thể không kèm header xác thực trong khi app yêu cầu API Key.
-**Đã làm:** 2026-11-12 user cung cấp SePay key; key đã được lưu vào `.env`, không phản hồi/ghi giá trị ở log hay file dự án. Đã xóa hậu tố header khỏi log webhook (chỉ ghi scheme + cờ key đã cấu hình). Key có hiệu lực sau lần restart kế tiếp; chưa thử SePay webhook thật.
-**Còn treo:** cần cấu hình Webhooks SePay chế độ API Key + URL công khai và xác nhận callback. Giao dịch thật chưa kiểm thử.
-
-### Bug 28 — Thanh tiến độ tải cho tải đơn/từng mục như tải batch [CAO — UX] ✅ FIX 2026-11-10 (đợt 4)
-**Yêu cầu user:** thanh loading khi tải video (như tải batch nhiều video).
-**Fix backend:**
-- `/api/video/download` giờ nhận `job_id` → tạo entry `DOWNLOAD_PROGRESS` (user_id, 0%); yt-dlp path gắn `progress_hooks` với **byte-level percent** (`total_bytes`/`downloaded_bytes`); TikWM path **stream bằng `client.stream` + `iter_bytes`** ghi % từng chunk (video) hoặc từng ảnh (post ảnh); trạng thái mới `transcoding` (99%, hiển thị "🎞 Đang chuyển sang H.264…") khi chạy `_ensure_web_mp4`, `done` 100%, `failed` khi lỗi.
-- Batch progress sửa 2 lỗi cũ: hook giờ nhận đúng `total_items` (`_dl_progress(job_id, len(items))`) và **đếm đúng số item xong** (trường hợp một item xong ghi đè tiến độ item khác); helper `_bump_progress()` dùng chung; byte-level hook vẫn chạy trong từng item. TikWM trong batch cũng nhận `job_id` (trước không có).
-**Fix frontend:**
-- `#btn-dl-one` ("Tải ngay 1 video"): hiện thanh progress gold (`#dl-one-bar` + `#dl-one-pct` + `#dl-one-stage`) với giai đoạn: `⬇ Đang tải…` → `🎞 Đang chuyển sang H.264…` → `✔ Hoàn tất` (poll `/api/video/download-progress/{jobId}` 500ms; 0 pageerror).
-- Nút "📥 Tải về máy" trong từng thẻ (`dlOne`): truyền `job_id`, hiển thị progress vào **thanh progress của list header** (dùng lại `#dl-progress-*`) — tiến độ 1 mục đơn lẻ rõ ràng như khi tải cả lô.
-- Helper `startDlProgressPoll` dùng chung; batch giữ nguyên hành vi.
-**Verify:** `node --check` OK; py_compile OK; **pytest 184 passed, 7 skipped**; Playwright chụp mid-download (bar hiện "⬇ Đang tải…") + done (bar 100%, "✔ Hoàn tất", kết quả Me at the zoo) — 0 lỗi; server 8001 = **PID 4248** (GET / 200, OpenAPI 200).
-
----
-
-### Bug 29 — Quét dung lượng video trước khi tải (từ chối sớm) + clock ETA đếm ngược [CAO — UX/an toàn] ✅ FIX 2026-11-10 (đợt 5)
-**Yêu cầu user:** (1) quét kích thước video — vượt giới hạn thì hiện "Không hỗ trợ" thay vì thanh loading; (2) clock đếm ngược thời gian tải video.
-**Fix backend:**
-- Config mới **`DOWNLOAD_MAX_MB`** (mặc định **200**, `.env.example` cập nhật) — giới hạn dung lượng mỗi video.
-- `/download`: trước khi tải, gọi metadata (`download=False`) và ước lượng size của format được chọn: **ưu tiên `filesize`/`filesize_approx`; FB/DASH không có → ước lượng `tbr × duration`** (ví dụ Reel 1609377656889169 ≈ 20MB). Vượt giới hạn → **422** ngay (~3s) với message `Không hỗ trợ: video ~XMB vượt giới hạn NMB (tăng DOWNLOAD_MAX_MB nếu muốn tải)` + progress status `rejected`. Batch áp dụng y hệt từng mục (mục lỗi báo rõ lý do, mục còn lại vẫn chạy).
-- Progress giờ kèm `eta` (giây), `speed`, `total_bytes`, `downloaded_bytes` (yt-dlp hook lấy thẳng từ `d["eta"]`; TikWM tự tính speed/eta từ bytes từng 0.5s). Endpoint `/download-progress/{job_id}` trả đủ các trường + `rejected`.
-**Fix frontend:**
-- Trạng thái `checking` (🔍 Đang kiểm tra dung lượng…), `rejected` (✖ Không hỗ trợ) hiển thị trực tiếp trên thanh progress; lỗi 422 chứa "Không hỗ trợ" → stage đỏ "✖ Không hỗ trợ", không hiện 0% giả tạo.
-- **Clock ETA** kế bên thanh progress: `⏱ mm:ss`, cập nhật mỗi 500ms (từ `p.eta`), `00:00` khi xong, `--:--` khi chưa xác định (Kiểm tra/Lỗi/Không hỗ trợ). Batch list header cũng hiện `percent · ⏱ mm:ss`.
-- Mô tả "Tool tải được những gì?" cập nhật: giới hạn 200MB/video (đổi qua DOWNLOAD_MAX_MB), vượt → báo ✖ Không hỗ trợ trước khi tải.
-**Verify:** pytest **184 passed**; Playwright: server tạm `DOWNLOAD_MAX_MB=1` → bấm tải Reel → **422 trong 3s**, UI hiện "✖ Không hỗ trợ" + toast đỏ message; server `DOWNLOAD_MAX_MB=200` → tải YouTube OK 200 trong 9s; `node --check` OK; server 8001 = **PID 21420**.
-
-### Bug 30 — Dịch & Phụ đề: xuất video báo lỗi + không có preview + nghi ngờ mất câu [CAO — tính năng gần như không dùng được] ✅ FIX 2026-11-10 (đợt 6)
-**Yêu cầu user:** (1) up video tiếng Anh lên quét chỉ lấy được 1 câu đầu; (2) muốn màn hình preview + chỉnh sửa trực tiếp trên video; (3) khi gen vẫn báo lỗi.
-**Tái hiện + kết quả:**
-- Export (`/api/video/process`) LUÔN lỗi: `FFmpeg lỗi: [Parsed_subtitles_1] Unable to parse "original_size" option value "` — bug escape đường dẫn Windows trong `subtitles=` filter (`C\:/...`). **Fix triệt để:** dùng **tên file tương đối** (`subtitles=sub_xxx.srt`) + `subprocess.run(cwd=settings.outputs_dir)` — bỏ hoàn toàn `_clean_path`. **Verify:** export OK cả 3 luồng (không TTS / tts-auto / tts-HoaiMy) — h264+aac, phụ đề render đúng (frame chụp: chữ trắng viền đen).
-- **TTS `tts_voice="auto"`** (nút "Tự động theo giới tính nhân vật" trên UI) → backend không hỗ trợ `auto` → edge-tts fail MỌI câu → 500 sau ~5 phút chạy. **Fix:** map `auto` → `vi-VN-HoaiMyNeural`. **Verify:** tts-auto giờ xuất thành công (dubbed=true, ~102s).
-- **Transcribe timeouts** quá ngắn (wav extract 60s, PCM decode 300s) — video dài sẽ 500; nâng lên **600s/1800s**.
-- **Transcribe VAD:** bật `vad_filter=True` + `condition_on_previous_text=False` — tránh gộp toàn bộ audio thành 1 câu khổng lồ khi nói liên tục (nguyên nhân khả dĩ nhất của "chỉ lấy được 1 câu đầu"); đồng thời test 26s + 105s loop: đều trả **đủ segments** (7/28 câu, ~7-10s).
-- **Preview WYSIWYG mới** (card "👁️ Xem thử với phụ đề — chỉnh sửa trực tiếp trên video"): `<video>` nguồn + overlay phụ đề chạy theo `currentTime` theo đúng cue SRT; **bấm trực tiếp vào chữ trên video để sửa câu** — tự đồng bộ 2 chiều với ô SRT (qua `input` event + debounce); vị trí (top/middle/bottom) và cỡ chữ áp dụng live theo scale thực của player; **hộp vàng nét đứt = vùng blur** (đúng tọa độ/scale theo video); nút "Nạp lại video"; hưỡng dẫn xem thử bên phải. Sau khi bấm "Bắt đầu Phiên âm & Dịch" SRT tự nạp vào preview (bug: textarea được gán value bằng code nhưng preview không nhận — fix bằng dispatch `input`).
-**Verify (Playwright E2E):** nạp video → transcribe (7 câu) → overlay hiện "Welcome to this video." đúng cue #1/7 → **sửa text trực tiếp trên video** (`Cau sub da sua`) đồng bộ vào SRT → tick "Bật bộ lọc làm mờ" → bấm Xuất → video xuất xong (h264+aac), console **0 pageerror**. Lưu ý: headless Chromium trên máy **không decode được H.264** (videoWidth=0) nên video hiển thị đen trong test — preview hoạt động đúng trên Chrome/Edge thật.
-**Còn phụ thuộc:** dịch sang tiếng Việt vẫn chờ HF credits hoặc duyệt Vilao LLM translator (giữ nguyên ngôn ngữ gốc khi 402 — xem Bug 19).
-
-### Bug 31 — Dịch & Phụ đề đợt 7: quét kỹ + fix nốt các vấn đề còn lại ✅ FIX 2026-11-10
-**Danh sách vấn đề tìm thấy qua quét kỹ UI + backend (đã fix hết):**
-1. **Âm gốc khi lồng tiếng luôn 100%** — checkbox "Giữ âm gốc" giờ có slider **âm lượng âm gốc 0–100%** (hiện khi tick, mặc định 50%, gửi `src_volume`; backend dùng đúng giá trị này thay vì cứng `1.0`).
-2. **Vùng làm mờ `width/height ≤ 0`** → ffmpeg lỗi mơ hồ — giờ **422 "Vùng làm mờ không hợp lệ: width/height phải > 0"**, verify qua UI (tick blur → nhập W=0 → bấm Xuất → toast đúng lỗi).
-3. **Phiên âm video dài không có phản hồi tiến độ** — thêm đồng hồ **⏳ mm:ss** đếm thời gian xử lý dưới nút Phiên âm.
-4. **Sửa chữ trên preview bị cắt khoảng trắng** (`trim()` lúc đang gõ) — giữ nguyên text thô.
-5. **Nhãn sai "Tự động theo giới tính nhân vật"** (backend không hỗ trợ) — đổi thành "Tự động (Tiếng Việt — giọng nữ)".
-6. **Chưa ghi rõ trong UI rằng dịch cần HF credits** — thêm dòng muted dưới nút Phiên âm; user từng report dịch không chạy vì tưởng free.
-7. **Export luôn lỗi** (Bug 30 đợt 6), **TTS `auto` 5 phút treo**, **preview mất chữ sau phiên âm** — vẫn đã fix ở đợt 6.
-**Verify E2E (Playwright, server tạm):** transcribe (7 câu) → overlay "Welcome to this video." đúng cue → sửa text trên video → tick blur (validation 422 đúng) → tick "Giữ âm gốc" + slider 40% → bấm Xuất → video có h264+aac (~24.5s), **0 pageerror**. pytest **184 passed**; server 8001 = **PID 22104**.
-**Còn giới hạn:** dịch sang Tiếng Việt vẫn cần HF credits (hoặc duyệt Vilao LLM translator) — HF mọi route trả 402 với account hiện tại; backend giữ phụ đề gốc khi không dịch được và báo `translation_status` cho UI. Headless Chromium không decode H.264 (chỉ ảnh hưởng test).
-
----
-
----
-
-### Bug 32 — Dịch & Phụ đề đợt 8: song ngữ + preview nhỏ gọn + TTS cảm xúc + truncation diagnostic ✅ FIX 2026-11-10
-**Yêu cầu user:** (1) lấy không hết sub + muốn phụ đề 2 cột (gốc / bản dịch); (2) đưa phần chỉnh sửa lên vị trí video đang show, đưa preview sang chỗ hướng dẫn, hướng dẫn xuống bottom, preview nhỏ gọn lại; (3) giọng đọc không cảm xúc, cần lồng tiếng cảm xúc + đọc chuẩn/tự nhiên hơn.
-**Fix:** `/transcribe` trả `srt_original`, `srt_translated`, `srt_bilingual`; UI dropdown Song ngữ/Gốc/Dịch đổi ngay; TTS song ngữ chỉ đọc dòng cuối (bản dịch); layout editor trái + preview max-width 230px phải + hướng dẫn xuống bottom; dropdown cảm xúc → edge-tts rate/pitch/volume qua `tts_emotion`; `pcm_seconds` vs `ffprobe container_seconds` cảnh báo file bị cắt; Whisper mặc định đổi base→small (`WHISPER_MODEL=small`, VAD=1).
-**Verify E2E:** 7 câu → chuyển original/bilingual → overlay đúng cue, 0 pageerror; API `tts_emotion=vui ve` export 200 dubbed=true; pytest **184 passed**, server 8001 PID 19676.
-**Giới hạn:** HF vẫn 402 → chưa dịch thực tế, cần HF credits/PRO hoặc duyệt Vilao LLM translator.
-
----
-
-### Bug 33 — Phụ đề: dịch VI không chạy + font sub khổng lồ + dub đọc cả 2 dòng song ngữ ✅ FIX 2026-11-10 (đợt 9)
-**Yêu cầu user (với file thật `D:\code\Ad-KOL-Nomadtoast-2.mp4 ... (1080p, h264).mp4`):** đầu ra tiếng Việt sao sub lại tiếng Anh; lấy thoại không hết; fix xong test chạy mượt.
-**Fix:** (1) Fallback dịch **Google Translate miễn phí** (`client=at` + UA Android app; 429 → `client=mobile`) trong `_translate_google()` — không cần key; HF vẫn ưu tiên nếu có; mọi cặp ngôn ngữ (kể cả vi→ja). UI hiện "Đã dịch sang…" qua `ok_google`. (2) File user upload trong storage chỉ 7.5s — phiên âm file đầy đủ ra đủ 8 câu (verify cả base/small, VAD) — không phải bug. (3) Font sub khổng lồ: viết lại đường render subtitles bằng **ASS** với `PlayResX/Y = kích thước video thật`, font scale theo `height/720` (bold, viền đen, MarginV) + `-vf ass=`. (4) `_parse_srt` trả đủ 2 dòng (sửa lại), dub đọc đúng dòng cuối (bản dịch). (5) `has_translation` thiếu `"ok_google"` → song ngữ/dịch không xuất được; đã sửa.
-**Verify (server tạm với file ad thật):** transcribe → `ok_google` + song ngữ đúng format (EN trên/VI dưới); export `tts_voice=vi-VN-HoaiMyNeural` `tts_emotion=vui ve` → success, frame check: chữ đúng cỡ + 2 dòng song ngữ đầy đủ. pytest **184 passed**, server 8001 = PID 14952.
-
-### 2.5. Phát hiện mức thấp — ĐÃ FIX / còn lại (cập nhật 2026-11-10 đợt 2)
-- **Owner-check file media đầu vào** (`/api/assistant/edit`, `/api/video/transcribe`, `/api/video/process` nhận URL bất kỳ trong storage): **KHÔNG SỬA** — `/media/*` vốn public theo thiết kế (ai có URL đều đọc được), owner-check ở đây không thêm gì; ghi nhận.
-- **`except Exception: pass`**: ✅ **FIX 2026-11-10** — `autopipeline._persist_snapshot`/`get_job`/`recover_interrupted_jobs` + `minimax._openai_seconds` + `routers/admin.py` (metadata giọng hỏng) giờ log `logger.warning` có ngữ cảnh (thay silent pass); `videotools.py` rmtree bọc try/except thừa bỏ hẳn (`ignore_errors=True` đủ); `tts.py:359` giữ best-effort có chủ đích; upfront-guard ước tính (`assistant.py:346, 562`) giữ nguyên (có chủ đích: model admin lỗi → không chặn gen).
-- **Dead config**: ✅ **FIX 2026-11-10** — xoá `ai_video_credits_per_sec`, `ai_video_2k_multiplier`, `muse_*`, `hunyuan_*`, `wan21_timeout_s` khỏi `config.py`; xoá `AI_VIDEO_CREDITS_PER_SEC`/`AI_VIDEO_2K_MULTIPLIER` + ghi chú giá cũ khỏi `.env.example` (đã đối chiếu `.env.example` chỉ còn 2 chỗ này, tests/static không tham chiếu).
-- **Trùng lặp**: ✅ **FIX 2026-11-10** — `_voice_meta_dir` gộp vào `app/media.py::voice_meta_dir()`, cả `assistant.py` và `admin.py` import; xoá `autopipeline.available_steps()` + import `models_for_step` thừa; xoá hằng `_REVIEW_PHASES`.
-- **UI dead state**: ✅ **FIX 2026-11-10** — xoá `lastScript`, `currentSelectedCharUrl`, `chosenPromptModel`, `window._pipelineImages*` (pagination tự chứa bằng closure); rebind phân trang ảnh viết lại thành `bindImagePages()` đệ quy gọn (bỏ setTimeout lồng nhau); xoá block drag-drop `input[data-img]` không bao giờ khớp selector; xoá nhánh `else if` rỗng; 2 chỗ `new Audio().play()` thêm `.catch(()=>{})`.
-- **Race UI (pgAI/pgBatch setTimeout)**: ✅ **verify lại 2026-11-10** — cả 2 block đều guard từng element (`if(!sel) continue`, `durBox&&durHidden`, `clonedBox`, …) — không crash được khi user đổi tab; `btnStart.onclick` gán đồng bộ ngay sau `innerHTML` (an toàn). Không cần sửa.
-- **Phân loại requirements**: ✅ **FIX 2026-11-10** — `pytest` chuyển từ requirements.txt runtime → requirements-dev.txt (CI cài dev file, verify đọc `.github/workflows/test.yml`: `pip install -r requirements-dev.txt` + playwright — không vỡ CI).
-- **Khoảng trống test** (CHƯA fix, ưu tiên thấp): toàn bộ `/api/video/*` không có test; `/assistant/plan|keyframes|gen-scenes|edit|estimate|voice-preview` chưa test; `/api/auth/me/activity` chưa test. Đường `/api/generate` render `ai_video`/`ai_dance` giờ đã không còn crash (Bug 21, có 2 test cho `pricing.video_cost`).
-
----
-
-## 3. 📋 BẢNG TÍNH NĂNG — quét toàn bộ 2026-11-08, verify lại 2026-11-10
-
-> **Kết quả quét lại 2026-11-10 (2 agent):** frontend 13 tab — mọi tab có hàm render + handler, không fetch nào trỏ endpoint không tồn tại, checklist 29 tính năng UI đều CÓ; backend 7 router ~90 route — không route trùng path/method, migration 0001→0011 liên tục, 15 nhóm tính năng backend đều CÓ. Khác biệt so với bảng dưới: `/api/generate` AI-video trước đó **crash 500** (Bug 21, đã fix); `/api/video/*` chưa có test.
-
-> Ký hiệu: ✅ hoạt động · 🟡 đã làm nhưng chưa verify live / còn hạn chế · ⬜ chưa làm · ❌ đã loại bỏ theo thiết kế
-> Mọi mục "⬜ test live" chỉ cần 1 lần gen thật tốn credit — user duyệt trước.
-
-### A. Tính năng LỚN (core)
-
-| STT | Tính năng | Trạng thái | Chi tiết |
-|-----|-----------|------------|----------|
-| A1 | **Pipeline gen video 1-click** (ý tưởng → LLM kịch bản → ảnh keyframe → clip phôi → lưu Template của tôi) | ✅ | Mới: estimate trước khi gen hiển thị (08/11). Chưa test live (credit). |
-| A2 | **Review sản phẩm — biến hình trang phục** (hook→biến hình→review→cận chi tiết, video = clip phôi) | ✅ | 9 test + code xong 06/11. ⬜ Chưa test live gateway vilao. |
-| A3 | **Gen hàng loạt** (upload 1 nhân vật + nhiều ảnh sản phẩm/ZIP, lần lượt, auto-save Template) | ✅ | 7 test + code xong 06/11. ⬜ Chưa test live. ETA hiển thị mới 08/11. |
-| A4 | Dựng video Final (xfade/loudnorm/Ken Burns) | ❌ | **LOẠI BỎ theo quyết định user** — khách tự edit clip phôi. |
-| A5 | **Thư viện + admin duyệt (private→publish) + Template của tôi** | ✅ | Xem chi tiết, Dùng lại (prefill), Xoá (DELETE), lọc danh mục/tỉ lệ 9:16/16:9/1:1. |
-| A6 | **Tải MXH — video & ảnh** (yt-dlp + TikWM fallback cả 3 đường, batch, preview, post ảnh TikTok) | ✅ | `/api/video/download|resolve|batch-download|download-progress` (Bug 26, verify live YT/TikTok/FB 2026-11-10); Instagram cần cookie (yt-dlp). |
-| A7 | **Dịch & Phụ đề** (faster-whisper local + SRT/vị trí/cỡ + blur watermark, ffmpeg `subtitles`+`boxblur`) | ✅ | 2026-11-10: **auto-detect ngôn ngữ nguồn**, **dịch target_lang** qua HF Opus-MT (12 ngôn ngữ), **lồng tiếng TTS** tuỳ chọn (chọn voice như video gen, giữ/tắt âm gốc), UI đầy đủ. `/api/video/transcribe|process`. Chỉ cho video đã tải; pipeline AI **cấm sub trong frame** (thiết kế). |
-| A8 | **Nạp tiền VietQR + webhook SePay/Casso + Khuyến mãi** | ✅ | Backend đầy đủ (QR, promotions tier, late payment, duyệt tay) + **UI Promotions CRUD mới 08/11**. |
-| A9 | **Ước tính chi phí trước khi gen** (tổng credit LLM+ảnh+video) | ✅ | Mới 08/11: wire `/api/assistant/estimate` vào tab AI, cập nhật khi đổi model/thời lượng. |
-| A10 | **Veo lip-sync khẩu hình khớp thoại** | 🟡 | 06/11 nhét câu thoại vào prompt (`lip-sync exactly to this line`); bật TTS → model câm miệng. ⬜ Chưa verify live. |
-| A11 | **Clone giọng người dùng** (upload mẫu giọng) | 🟡 | ✅ Upload/lưu/nghe lại/xoá hoạt động (mount `/media/voices`, delete, test) (08/11); **2026-11-09: engine clone THẬT qua ElevenLabs** — `config.py` có `elevenlabs_api_key` (`ELEVENLABS_API_KEY`); upload khi có key → tự gọi `voices/add` → lưu `provider_voice_id` + `voice_value` (el:<id>) trong meta; UI: dropdown giọng đọc (AI + batch) hiển thị "🎤 Giọng clone của bạn (ElevenLabs)" + badge clone/chưa clone; `gen_tts` dispatch: voice `el:` → `gen_clone_tts` (ElevenLabs), còn lại edge-tts; `voice-preview` cho phép `el:`; xoá giọng xoá cả clone trên provider; 3 test mới (fake clone/delete/gen dispatch) — **172 passed**. ⬜ Chưa gen thật (cần `ELEVENLABS_API_KEY` thật + duyệt credit provider). |
-| A12 | **Bảng giá & Quản lý Model** (admin) | ✅ | Giá theo model/giây/lần gọi, bật/tắt, hàng loạt, đồng bộ registry, PricingItem log. |
-| A13 | **Admin model CRUD + key vào .env** | ✅ | Model admin key lưu `.env` (`MODEL_<ID>_API_KEY`), DB không giữ key; sync tự migrate; 08/11. |
-| A14 | **TTS giọng đọc có cảm xúc** (không cứng đơ) | ✅ | 08/11: emotion engine edge-tts (rate/pitch/volume) — ~28 tag vi/en + bỏ dấu + khớp dài nhất; storyboard LLM **bắt buộc mỗi câu `thoại` có tag `biểu_cảm`** (không mặc định "bình thường"); cue diễn xuất EN nhúng vào video prompt cho Veo; TTS nhận volume; text cuối câu tự thêm dấu nhịp | 157 test pass. Demo: `outputs/tts_demo_*.mp3`. **Còn thiếu:** chưa gen live để nghe toàn pipeline (credit). |
-| A15 | **"Tạo lại cảnh lỗi"** (gen lại đúng cảnh thiếu clip sau pipeline) | ✅ | 08/11: endpoint `POST /api/assistant/pipeline/{job_id}/retry-failed`; refactor `_gen_scene_video` + `_scene_video_prompt` dùng chung với render lần đầu; retry chỉ gen lại cảnh chưa có clip; trừ credit chỉ cảnh thành công; tự cập nhật dự án đã lưu trong "Template của tôi"; UI nút vàng "🔁 Tạo lại N cảnh lỗi (tốn credit)" + poll tự render lại tab Clip phôi. Verify: pytest 158 (test mới `test_retry_failed_scenes_regenerates_only_failures`) + Playwright smoke không lỗi. |
-| A16 | **Library "edit before submit"** | ✅ | 08/11 (verify code): `renderFastForm` prefill `prefInputs` vào `value=` của mọi input text layer → user sửa được mọi layer (chữ/logo/nền) trước khi gửi; ảnh mới upload theo flow cũ. Tiêu đề + danh mục cũng editable. |
-| A17 | **Regression model admin video (Bug 9)** | ✅ | 08/11: phát hiện khi làm retry — `autopipeline.py` video path đọc `row.api_key` trực tiếp (sau migrate = rỗng) → gen video Veo/admin sẽ lỗi "chưa có API key". Đã sửa: dùng `adminmodels.creds()` (đọc `MODEL_<ID>_API_KEY` từ .env). |
-| A18 | **Billing LLM + Upfront estimate guard** | ✅ | 08/11: (1) `_run_planning` trừ credit LLM sau khi storyboard thành công; (2) `/pipeline` + `/batch` có **upfront guard 402**; (3) 08/11 (cuối 4): phí video chuyển sang **theo request** (1 clip = 1 lần model_price — khớp Veo) thay vì theo giây; image vẫn theo từng cảnh. |
-| A19 | **Kéo giá gốc API vào tab admin + cột Hoà vốn** | ✅ | 08/11: endpoint `GET /api/admin/provider-costs` (admin) gọi `GET {base_url}/models` từng model admin qua API key (chuẩn NewAPI trả đầy đủ `pricing_mode/price_per_request/token/cached/min` + seconds + model_type + active). Bảng "Model do admin đã thêm" có 2 cột mới: ☁️ **Giá gốc API** (đ/đơn vị, match bidirectional + bỏ `vid/` prefix) và **≥ Hoà vốn** (credit/giây cho video — gốc/max_clip; credit/req cho LLM/image — gốc/vnpc) + badge Lời/Lỗ theo margin (price×vnpc×max_clip vs gốc). Map giá thật: Veo 3000đ/req, Omni Flash 5000đ, Gemini Image 85đ, GPT Image 700đ, MiniMax-M3 15đ, DeepSeek 10đ, GLM 8đ, Claude Opus-5 token 5250/26250. |
-| A20 | **Đặt giá tool cho từng model (chống lỗ 100%)** | 🟡 | 2026-11-09: thêm nút **"📈 Điền giá ≥ Hoà vốn"** trong bảng "Model do admin đã thêm": tính giá tối thiểu = giá gốc ÷ vnpc (1000đ/credit), làm tròn **lên** theo bước 0.1 credit, chỉ điền vào ô đang 0, không tự lưu. Admin bấm nút → kiểm tra cột ≥ Hoà vốn → bấm 💾 Lưu tất cả. |
-| A21 | **Phí vs giá gốc không khớp (Veo)** | ✅ | 08/11: (b) storyboard LLM giờ viết cảnh theo **đúng mốc giây model video** (tra qua `/models` của provider → `clip_steps`; Veo: 4/6/8s; hook snap theo mốc; cảnh snap vào mốc; phân bổ tổng bám mốc); (c) phí video **theo request** (1 clip = 1 lần trừ model_price — khớp cách vilao tính); đơn vị pricing video = `request`; `_openai_seconds` vẫn chọn "mốc gần nhất" (admin không muốn ceil). |
-| A22 | **Chế độ "🎨 Chỉ gen ảnh phân cảnh" (không gen video)** | ✅ | 08/11: `mode=images_only` — validate chỉ LLM + ảnh, video field ẩn trên UI, không gọi `_run_rendering`, estimate bỏ video (chỉ LLM + ảnh), video retry 409, pipeline done khi ≥1 ảnh thành công, dự án raw lưu `images_only:true`, UI tự chuyển tab Ảnh. Test mới `test_pipeline_images_only_skips_render` + `test_pipeline_images_only_fails_when_all_images_fail`. Verify live: ước tính "1.95 credit · chỉ gen ảnh". |
-| A23 | **Chế độ "📝 Text → Video"** | ✅ | 08/11: `mode=text_to_video` — không storyboard/keyframe; LLM mở rộng prompt cinematic tiếng Anh (`expand_single_prompt`, fallback về ý tưởng gốc khi lỗi) → Veo t2v 1 clip; trừ 1 LLM + 1 video request. Test `test_text_to_video_single_clip`. |
-| A24 | **Chế độ "🖼 Ảnh → Video"** | ✅ | 08/11: `mode=image_to_video` — ảnh nhân vật bắt buộc (thiếu ảnh → fail "cần ảnh nhân vật"); LLM mở rộng prompt → Veo i2v first_frame=ảnh; trừ 1 LLM + 1 video request. Test `test_image_to_video_requires_image`, `test_image_to_video_with_image_ok`. |
-| A25 | **Bài viết (link) → video 60s** (nhóm đối thủ: 60s) | 🟡 | 11/11 (đợt 7): `app/article.py` — tải/bóc nội dung trang (hoặc dán nội dung) → LLM viết lời dẫn theo cảnh (hook→thân bài→CTA) → ảnh minh hoạ + TTS → ffmpeg Ken Burns + ghép + **phụ đề ASS** → 1 video + .srt. **Không dùng model video** (rẻ). API `/api/assistant/article*`, tab "📰 Bài viết → Video 60s". **Chưa test với LLM/ảnh thật (tốn credit — cần user duyệt)**; verify bằng mock: dựng được video 9s có phụ đề. |
-| A26 | **Preset bán hàng theo 16 ngành hàng** (đói thủ: ~18 ngành No Prompt) | 🟡 | 11/11 (đợt 7): `app/presets.py` — 16 ngành (đối tượng/hook/nỗi đau/điểm bán/CTA/hình ảnh), nhúng vào prompt storyboard qua `plan_storyboard(preset=...)`; pipeline nhận `preset` (id sai → 422); tab "🛍️ Bán hàng theo ngành" (chọn ngành → form sản phẩm → "Tạo video bán hàng"). **Chưa test thật (tốn credit).** |
-
-### B. Tính năng NHỎ
-
-| STT | Tính năng | Trạng thái | Chi tiết |
-|-----|-----------|------------|----------|
-| B1 | **Nhật ký tài khoản (Activity Log)** | ✅ | Tab "Nhật ký tài khoản" đã có sẵn (pgActivity) + tab Lịch sử render — fix claim cũ ghi "chưa có UI". |
-| B2 | **Progress bar** (trackGen/lịch sử) | ✅ | 08/11: bỏ cứng 20%/55% → creep theo thời gian; chỉ gallery template vẫn dùng spinner. |
-| B3 | **Kéo-thả upload** | ✅ | 08/11: áp dụng mọi ô file (AI nhân vật/bộ đồ/giọng, batch nhân vật/sản phẩm, thư viện, phụ đề). |
-| B4 | **ETA batch** | ✅ | 08/11: started_at/finished_at mỗi item + ước tính thời gian còn lại (~phút). |
-| B5 | **Nghe thử giọng trong tab Batch** | ✅ | 08/11: nút 🔊 cạnh ô TTS (AI tab đã có). |
-| B6 | **Ước tính ETA + retry sản phẩm lỗi trong batch** | ✅ | 2026-11-09: endpoint `POST /api/assistant/batch/{id}/retry-failed` (`batchpipeline.retry_batch_items` — chỉ reset & chạy lại item `failed`, đồng bộ qua sync thread giống batch thường, trừ credit như lần đầu); UI: nút **"🔁 Thử lại N sản phẩm lỗi (tốn credit)"** trong tab Gen hàng loạt khi batch done/cancelled và còn lỗi; poll batch refactor thành `pollBatch(bid)` dùng chung; test mới `test_retry_failed_items_runs_only_failures` — **169 passed**, 0 errors. (Credit duyệt: user phân quyền làm task này; gen thật vẫn cần duyệt trước.) |
-| B7 | **Skeleton loading** | ✅ | 08/11: `.sk-grid`/`.sk-med`/`.sk-line` + shimmer + `prefers-reduced-motion`; thay spinner placeholder ở 11 tab tải dữ liệu (thư viện, template của tôi, batch, ai, lịch sử, nhật ký, nạp, admin, users, promo...). |
-| B8 | **Library "edit before submit"** | ✅ | 08/11: form prefill cho sửa trước khi gửi (xem A16). |
-| B9 | **Pipeline job lưu bền vững + lưu tăng dần** | ✅ | 2026-11-09: bảng `pipeline_jobs` (migration 0010) + `PipelineJobState`; `_persist_snapshot()` lưu mọi thay đổi trạng thái/tiến trình/kết quả (lỗi DB không làm hỏng job); `get_job()` rehydrate từ snapshot sau restart; `recover_interrupted_jobs()` lúc startup đánh failed + ghi chú cho job dở. 2026-11-10: **lưu tăng dần** — `save_pipeline_template()` giờ luôn upsert (create_or_update) thay vì chỉ 1 lần cuối pipeline; gọi ở: bắt đầu job, sau planning, sau keyframing, sau rendering, sau từng cảnh video xong, khi done. Template lưu quyền private; `source_feature` + `stage` (plan/keyframed/done) ghi trong `template_schema`. pytest 176 passed. |
-| B10 | **Nút "Tạo lại cảnh lỗi"** | ✅ | 08/11: endpoint `/retry-failed` + UI nút vàng + poll refresh (xem A15). |
-| B11 | **Veo/LLM gen thật verify** | ⬜ | review outfit, batch, lip-sync — cần gen thật (credit). |
-| B12 | **API key raw trong .env vs DB** | ✅ | 08/11: model admin key → .env only (Bug 9). |
-| B13 | **8 test UI fail** | ✅ | 2026-11-10 (đợt 2): `tests/test_ui.py` viết lại hoàn toàn — 3 journey tự chứa (không cần redis/celery), chạy thật với Chromium — **3 passed**; suite **181 passed, 7 skipped** (Bug 12/13). |
-| B14 | **Skeleton/toast/loading nhỏ** | ✅ | 08/11: skeleton xong (B7); toast đã có; progress TrackGen creep theo thời gian. |
-| B15 | **Client file-info upload** | ✅ | 08/11: `wireFileInfo()` hiển thị tên + KB/MB ngay khi chọn/drag-drop (AI nhân vật/bộ đồ, batch nhân vật); server vẫn chặn 200MB + extension. |
-| B17 | **Admin Analytics (phân tích vận hành)** | ✅ | 11/11 (đợt 7): tab "📊 Analytics" — kỳ: lifetime/today/yesterday/l7d/l30d/custom; chỉ số: tổng user · **user mới** · **user hoạt động (online)** · đang online 15 phút · lượt đăng nhập · **tiền nạp** (₫ + credit) · **tiền chi** (credit + ₫) · bảng theo ngày. API `/api/admin/analytics` |
-| B18 | **Nav trang chủ theo trạng thái đăng nhập + icon đầu người** (sửa thông tin / đăng xuất) + nút ✏️ cạnh "Thoát" | ✅ | 11/11 (đợt 7): `app/site_shell.py` — chưa đăng nhập → "Đăng nhập"/"Đăng ký"; đã đăng nhập → "Dashboard →" + avatar → dropdown (tên/email/credit, Sửa thông tin qua `PUT /api/auth/me`, Đăng xuất). `/dashboard?login=1&tab=register` mở thẳng tab đăng ký. |
-| B19 | **Tab Tài khoản (admin) style lại — bấm tài khoản sổ ra 4 mục** | ✅ | 11/11 (đợt 7): ✏️ Thông tin (sửa tên/email/vai trò) · 💰 Tiền (số dư + cộng/trừ credit + lịch sử dòng tiền + giao dịch nạp) · 📋 Hoạt động · 📦 Sản phẩm (render + template). API `/api/admin/users/{id}/detail`, `PUT /api/admin/users/{id}`. |
-| B16 | **Nạp tiền tự động hoàn toàn** | 🟡 | 2026-11-12: UI tab Nạp credit polling `/api/billing/transactions/{id}` mỗi 5 giây; webhook thành công tự hiện xác nhận, `refreshMe()` cập nhật số dư và toast. Timer cũ hủy khi tạo QR mới; hết hạn báo liên hệ hỗ trợ nếu đã chuyển. Backend có Sweeper hết hạn QR mỗi 30 giây + lazy-expire. User cung cấp SePay API key, đã lưu vào `.env` (giá trị không ghi vào file báo cáo); tiến trình đang chạy cần restart để nạp biến mới. Còn lại: chưa xác nhận webhook SePay thật/public URL, chưa thử giao dịch thật. | `.env`, `static/index.html`, `app/maintenance.py`, `app/routers/billing.py` |
-
-### BẢNG VIỆC CHƯA LÀM / CHƯA HOẠT ĐỘNG (tổng hợp, verify lại 2026-11-10 đợt 2)
-- Test live: A2 review outfit, A3 batch, A10 lip-sync (1 lần gen ngắn, tốn ít credit, user duyệt trước)
-- **Nạp tiền (B16):** UI đã tự polling trạng thái giao dịch sau khi tạo VietQR, tự cập nhật số dư khi webhook thành công; Sweeper đã expire QR định kỳ. Còn cần xác nhận cấu hình SePay API Key/webhook public và test giao dịch thật.
-- **Dịch phụ đề**: re-verify 2026-11-10 — HF 402 toàn diện (key chưa đổi; account prepaid không credit); cần user nạp credit/mua PRO hoặc duyệt Vilao LLM translator
-- Đã xử lý hết mục 2.5 đợt 1+2 (logging, dead config/code, UI dead state, race verify, requirements, test_ui)
-
-### Rà soát bảo mật + yêu cầu giao diện/preview — 2026-11-12
-- Đã lưu SePay API key người dùng cung cấp trong `.env`; không ghi giá trị key vào code, test, log hoặc tài liệu. Cần restart app để process hiện tại đọc cấu hình mới; không restart 8001/deploy nếu chưa được yêu cầu.
-- Đã gỡ tên nhà cung cấp/engine khỏi các thông điệp và lựa chọn trong UI khách hàng. Search các cụm `Hugging Face`, `Vilao`, `faster-whisper`, `Whisper`, `Opus-MT`, `gateway`, `inference` trong `static/index.html` không còn kết quả. Endpoint model pick-list không trả description/provider/base_url/key.
-- Preview subtitle: có video player controls; kéo handle riêng để di chuyển subtitle, kéo handle vàng để đổi cỡ, kéo/dùng góc vùng blur để di chuyển/resize; sync lại field xuất video.
-- Bảo mật: `resolve(url, user_id)` kiểm tra file nằm trong thư mục owner cho luồng process/transcribe phụ đề; kiểm tra SSRF Base URL model ở production cả IP literal và DNS resolve, chặn private/loopback/link-local/multicast/reserved; dev/test opt-in `ALLOW_PRIVATE_MODEL_URLS=1`; log auth miss webhook không ghi bất kỳ phần nào của header.
-- Tests mới: xác nhận model pick-list không lộ provider metadata; owner scoping/path traversal; SSRF IP literal và DNS. Verify trước đợt billing: `python -m pytest tests/ -q` → **230 passed, 7 skipped**; `node --check` + `py_compile` pass. Không chạy giao dịch SePay thật.
-- Đã xử lý hết mục 2.5 đợt 1+2 (logging, dead config/code, UI dead state, race verify, requirements, test_ui)
-
-### Quản lý giá/hạn mức & sửa phí video — 2026-11-12
-- Thêm migration `0014_feature_policies` với `FeaturePolicy` (feature × model: phí dịch vụ, quota free lifetime, bật/tắt) và `FeatureUsage` audit; API Admin `/api/admin/feature-policies` (list/update/usage) và tab admin tương ứng. UI ghi rõ miễn service fee không có nghĩa là miễn phí API model; quota hiển thị là lượt lifetime/user.
-- Thêm billing reserve/finish: trừ trước, refund một lần khi feature lỗi/hủy, chốt số unit thành công; quota cộng theo tổng unit. Pipeline người dùng bị tính theo các lần gọi model API thành công hiện có; restore preflight estimate toàn job để chặn bắt đầu khi số dư dự kiến không đủ. Sửa settle pipeline không còn chốt thành công ở lúc chỉ khởi tạo job.
-- Batch reserve riêng cho từng sản phẩm, mỗi item được settle/refund theo trạng thái; retry item lỗi vẫn không thu hai lần reservation cũ (retry tiếp tục cần có audit riêng trước khi xem là hoàn chỉnh).
-- Dịch/phụ đề reserve trước tối đa hai lượt LLM; chốt số call thành công, Google fallback không bị tính nhầm là lượt LLM. Template script/analyze và chat nối vào policy; bài viết→video có phí feature, model API vẫn được tính tại các bước riêng.
-- Migration test expectation cập nhật `0014`; thêm test quota theo units, phí model + free service, refund/idempotency và policy disabled.
-- Verify working tree sau thay đổi: `python -m py_compile` cho module billing/router/pipeline OK; `python -m pytest tests/ -q --tb=short` → **232 passed, 7 skipped**; extract block script với UTF-8 + `node --check` OK. `git diff --check` còn báo dòng trống cuối file `app/config.py:168` (vấn đề có sẵn/ngoài phạm vi thay đổi phiên này); không sửa.
-- **Chưa deploy/restart server 8001.** SePay webhook thật chưa được kiểm tra; không chạy giao dịch thật.
-- Ghi chú còn lại: policy usage quota hiện dùng lifetime (không reset theo ngày/tháng). Một số workflow (ví dụ template_render, các route render khác) chưa được reserve/settle nối hoàn chỉnh; cần hoàn tất kiểm kê feature toàn app trước khi coi tab Admin bao quát 100%.
-
-### Gen hàng loạt review sai sản phẩm / đồng nhất nhân vật / khẩu hình / âm thanh — 2026-11-12
-- Audit gốc: LLM storyboard chỉ nhận URL ảnh chứ không phân tích ảnh thật; nevertheless prompt đã đặt “original outfit” cho hook, “outfit transformation” cho cảnh 2, rồi cho phép `outfit_bible` do LLM tự bịa và chuyển sang keyframe/video prompt. Vì vậy ảnh/video có thể ra blazer/sản phẩm khác user gửi. (Verified in `app/videopipeline.py` storyboard prompt, scene prompt builder; `app/autopipeline.py` keyframe reference selection + `_scene_video_prompt`.)
-- Khóa sản phẩm/nhân vật: review phases được gán theo vị trí hệ thống (không tin phase do LLM trả); hook bắt đầu sẵn với chính món đồ đã upload; cảnh reveal bỏ morph, camera/light reveal thôi; review giữ nguyên thiết kế. Các cảnh có nhân vật đều gửi cả hai ảnh tham chiếu khi adapter hỗ trợ; fallback composite tiếp tục bảo toàn hai reference. Product close-up chỉ ảnh sản phẩm và prompt cấm người/chi tiết bịa; prompt video mọi shot review nhấn image ref là nguồn chuẩn hơn mọi text.
-- Bài nói: TTS trước đây prompt yêu cầu miệng đóng, nên khẩu hình không thể khớp. Giờ prompt yêu cầu silent phoneme-timed articulation của câu chính xác, sau đó mux TTS vào clip bằng ffmpeg (map video nguồn + audio TTS, bỏ audio model). Nếu bật TTS mà không tạo được audio cho một cảnh có thoại, pipeline báo lỗi thay vì trả thành phẩm thiếu tiếng. Cảnh sản phẩm cận không sinh speaker/miệng; CTA xác định là voiceover.
-- Tests cập nhật/thêm: reference selection gồm cả hook; exact product lock/prompt phases; silent lip-sync vs native generated audio; verify ffmpeg mux maps external audio; focused review tests **11 passed**; toàn suite **234 passed, 7 skipped**; `py_compile` OK. Không gọi API generation thật, không phát sinh credit.
-- Giới hạn cần nói rõ: prompt + ảnh reference chỉ làm tăng consistency, không thể cam kết pixel-perfect; video gen có tính ngẫu nhiên và model/gateway có thể không tuân theo. Model ảnh chỉ nhận nhiều reference nếu adapter hỗ trợ; fallback ghép composite có thể giảm fidelity. Không tự khẳng định video kiểm chứng chất lượng bởi chưa gọi API trả phí.
-
-### Storyboard trả text thay vì JSON + video lệch keyframe — 2026-11-12
-- **Storyboard UI:** vùng “Toàn bộ prompt” trước đây nối phần diễn giải/prompt text quanh JSON, khiến người dùng copy được text chứ không phải một JSON parseable thuần. Đã đổi vùng hiển thị/copy thành `JSON.stringify(plan, null, 2)` בלבד; bảng kịch bản và prompt ảnh/video vẫn ở phần riêng.
-- **Parser LLM:** `response_format=json_object` là best-effort với gateway tương thích OpenAI; parser cũ greedy `\{.*\}` có thể gom cả object khác trong phần giải thích. Thay bằng JSONDecoder balanced object scan và test fenced/prefixed/trailing prose.
-- **Video lệch ảnh:** đường `/videos` truyền ảnh qua `input_image` base64, còn request v2 qua `content[].image_url` + `role:first_frame`; trong cả hai luồng, nếu ảnh keyframe không resolve được thì trước đây vẫn gọi API video mà thiếu first frame (vô tình thành text-to-video). Giờ fail-closed trước API khi thiếu keyframe để không tạo/thu phí clip không bám ảnh. Đã thêm test payload image-to-video.
-- **Giới hạn:** các fix đảm bảo JSON thuần ở UI và ảnh keyframe thực sự được gửi hoặc job dừng rõ ràng; không thể bảo đảm video pixel-perfect vì phụ thuộc model sinh. Không gọi API thật/không tốn credit.
-- **Verify:** focused tests 19 passed; full suite `python -m pytest -q` → **238 passed, 7 skipped**. `git diff --check` chỉ báo dòng trắng EOF đã tồn tại ở `app/config.py:168`; không sửa ngoài phạm vi. Không deploy, không restart server.
-
-### Storyboard lỗi không parse được phản hồi Claude/gateway — 2026-11-12
-- **Nguyên nhân bổ sung:** gateway tương thích OpenAI không luôn trả `message.content` dạng chuỗi; có gateway trả content blocks (`[{type: text, text: ...}]`), object structured (`{"json": {...}}`) hoặc trường `output_text`. Parser cũ gọi `.strip()` trực tiếp trên content nên không đọc được các dạng này và sau 3 lần retry báo “LLM không trả về JSON object hợp lệ”.
-- **Fix:** thêm `_extract_storyboard_text()` chuẩn hóa các dạng message trên trước khi parse; nếu content rỗng, lỗi mới báo các key cấu trúc an toàn để chẩn đoán mà không log prompt/key.
-- **Verify:** focused storyboard/review/consistency tests **20 passed**. Không gọi API thật, không deploy.
-
-### Gen video đa luồng: sản phẩm bịa, dịch báo chưa nạp, Template trùng/thiếu tiến độ — 2026-11-12
-- Audit thêm: các luồng gen không chỉ `review_outfit` mà cả pipeline/template render đều nhận prompt và ảnh đầu vào riêng; không có lớp khóa dữ liệu chung ở UI/route. Đã củng cố phần pipeline: giữ `from_tool` trong selections, không làm mất `saved_template_id` khi cập nhật result; serialize các lần autosave theo `job_id` và chỉ update template do đúng user sở hữu. Điều này ngăn một pipeline tạo nhiều project do race giữa các checkpoint.
-- Template của tôi: schema project hiện lưu `status`, `progress`, `step`, `error`; job cập nhật snapshot và đồng bộ tiến độ về project. UI hiển thị số project đang làm/chờ, thanh progress %, trạng thái công đoạn và tự refresh định kỳ khi còn job active. Không còn chỉ chờ tới lúc hoàn thành mới thấy project.
-- Dịch video: UI nạp link MXH trực tiếp qua `/api/video/download`, nạp file upload/URL local vào `selectedSourceUrl`, và nút “Nạp video đã upload”; khi bấm dịch luôn ưu tiên giá trị URL hiện tại trong ô nguồn. Backend vẫn chỉ `resolve()` file local thuộc owner, không mở SSRF.
-- Test verify: `py_compile` OK; `node --check` block JS UTF-8 OK; `python -m pytest tests/ -q --tb=short` → **234 passed, 7 skipped**. Focused subtitle + outfit tests **22 passed**. Không gọi API gen thật, không deploy/restart 8001.
-- Giới hạn: các route render cũ (`/api/generate`, fast/heavy/AI video) vẫn chưa dùng cùng một `ReferenceLock` trung tâm như pipeline review; thay đổi lần này sửa quan sát/trạng thái và race autosave, chưa thể cam kết tất cả model giữ đúng vật thể nếu không gửi ảnh tham chiếu đúng API của từng model. Cần audit/thiết kế adapter reference riêng cho từng render type tiếp theo.
-
-### Deferred theo user (2026-11-10): thanh toán VietQR/SePay — KHÔNG đụng tới cho tới khi user báo lại
-
----
-
-## 4. LƯU Ý MÔI TRƯỜNG / GIT
-
-- **Restart rule (xem mục 0):** sau MỖI lần sửa backend, restart 8001; verify GET / + OpenAPI; xin phép user trước khi kill process.
-- **Restart 09/11 đã làm:** server 8001 giờ chạy code mới (PID 7360, qua launcher mới tự thay server cũ khi port bị chiếm). Lưu ý: server do Claude chạy nền — nếu Claude dừng session, process vẫn sống detached; launcher mới sẽ tự nhận diện và thay thế lần chạy sau.
-- **Skill dựng video:** `.claude/skills/video-editor/` — nay chỉ còn tham khảo (editor đã bị loại khỏi pipeline); không dùng trong luồng gen clip phôi nữa.
-- **Repo git đang rebase dở:** tồn tại `.git/rebase-merge/` (author-script, done, git-rebase-todo...), HEAD detached. **KHÔNG chạy lệnh git mất trạng thái** (`reset`, `checkout`, `rebase --abort`...) trừ khi user yêu cầu.
-- API thật tốn credit (Vilao) — hạn chế test gọi API thật; ưu tiên `tests/fakes.py`.
-- GPU máy dev: Quadro P1000 4GB VRAM → không chạy model local; MimicMotion cần `scripts/setup_mimicmotion.sh`; Redis chưa có → GPU jobs tắt (AI video chạy web app).
-
----
-
-## 5. THỨ TỰ ƯU TIÊN XỬ LÝ (lần làm tiếp)
-
-### ✅ ĐÃ XONG — KHÔNG LÀM LẠI (tính đến 2026-11-08)
-
-| Việc | Ngày |
-|------|------|
-| UI/UX Redesign toàn bộ (Liquid Glass, gold, Plus Jakarta Sans, responsive) | 2026-11-05 |
-| Buttons + product cards redesign (12px radius, footer action bar) | 2026-11-05 |
-| Item video final + hover action (Xem chi tiết/Xoá) + checkbox custom gold | 2026-11-05 |
-| Loại bỏ editor — tool chỉ tạo clip phôi (raw clips) | 2026-11-05 |
-| Tab tỉ lệ 9:16/16:9/1:1 + preview dạng thẻ + prompt dump textarea + LLM tiếng Anh | 2026-11-05 |
-| Review outfit — code + 9 test (chưa test live) | 2026-11-05/06 |
-| Tab Gen hàng loạt — code + 7 test (chưa test live) | 2026-11-05/06 |
-| Bug trùng `transcribe_video` + `_format_srt_time` trong videotools.py | 2026-11-05 |
-| Bug 1 dead `raise` minimax.py + Bug 2/3 requirements (faster-whisper, edge-tts) + Bug 4/5 README conflict & INKSTONE_*→VILAO_* (kèm run.py) + Bug 7 db=None + Bug 8 silent except → logging | 2026-11-08 (pytest 144 passed sau khi fix) |
-| Bug 6 route `POST /api/generations/{id}/reuse` (Req 3) + Bug 9 API key model admin chuyển vào .env (`MODEL_<ID>_API_KEY`, sync tự migrate DB→.env) | 2026-11-08 (pytest 150 passed) |
-| Bug 10 (mới): `/media/voices` không mount → voice upload trả URL 404; metadata JSON public → chuyển vào `storage/voices_meta/` + thêm `DELETE /api/assistant/voices-cloned/{vid}` + UI giọng đã lưu (▶ nghe, 🗑 xoá) | 2026-11-08 (4 test voice, pytest 154) |
-| Bug 11 (mới): dead code — `videotools.py` dòng vô nghĩa `state = hook.__closure__ and None`, `.dl-item` no-op handler, comment lạc đề, import thừa (templates.py `adminmodels`, assistant.py tts_mod) | 2026-11-08 |
-| UI: TrackGen progress creep theo thời gian (bỏ cứng 20%/55%) | 2026-11-08 |
-| AI tab: ước tính chi phí trước khi gen (wire /api/assistant/estimate, cập nhật theo model/thời lượng) | 2026-11-08 (verify live qua Playwright: "Ước tính trước khi gen: 0 credit — LLM 0/lượt ×1 + Ảnh 0 (12 ảnh) + Video 0 (60s)") |
-| Batch tab: nút "🔊 Nghe thử" cạnh ô TTS + ETA (`started_at`/`finished_at` trong BatchItem, ước tính phút còn lại) | 2026-11-08 |
-| Kéo-thả upload mọi ô file (AI nhân vật/bộ đồ/giọng, batch nhân vật/sản phẩm, library fast/AI forms, subtitle) | 2026-11-08 (`.drop-hover` CSS + `attachDrop()` helper) |
-| **Billing: LLM credit charge + Upfront 402 guard** (pipeline + batch); **provider-costs endpoint + ☁️ Giá gốc API & ≥ Hoà vốn columns** | 2026-11-08 (pytest 162 passed) |
-| **Billing video theo request** (1 clip = 1 lần model_price) + **storyboard bám mốc giây model video** (Veo 4/6/8, `clip_steps` qua `app/provider.py` dùng chung với provider-costs) | 2026-11-08 (pytest 165 passed) |
-| **Chế độ "🎨 Chỉ gen ảnh phân cảnh"** (`mode=images_only`) — bỏ gen video + wiring UI (ẩn field video, estimate bỏ video, tab Ảnh tự active, retry 409) + 2 test mới | 2026-11-08 |
-| **Chế độ "📝 Text → Video" + "🖼 Ảnh → Video"** (`mode=text_to_video` / `image_to_video`) — không storyboard; LLM mở rộng prompt cinematic; 1 clip Veo; trừ 1 LLM + 1 video request; 3 test mới | 2026-11-08 (168 passed) |
-| Promotions UI: CRUD đầy đủ (thêm/sửa/xoá, nhiều mức thưởng, bật-tắt, datetime window) thay vì chỉ xem | 2026-11-08 |
-| Activity Log: tab "Nhật ký tài khoản" đã tồn tại — sửa lại bảng tính năng (trước đó ghi nhầm "chưa có UI") | 2026-11-08 |
-| **TTS emotion engine:** storyboard LLM bắt buộc tag `biểu_cảm` mỗi câu thoại; `tts.py` map ~28 tag (bỏ dấu, khớp dài nhất) → rate/pitch/**volume** edge-tts; cue diễn xuất EN nhúng video prompt (Veo); sanitize tự thêm dấu câu cuối câu; demo `outputs/tts_demo_*.mp3` | 2026-11-08 (pytest 157 passed) |
-| **"Tạo lại cảnh lỗi":** endpoint `/retry-failed` + refactor `_gen_scene_video` dùng chung; retry chỉ cảnh thiếu clip; trừ credit cảnh thành công; tự cập nhật template đã lưu; UI nút vàng + poll refresh | 2026-11-08 (pytest 158 passed) |
-| **Refactor nhỏ:** gỡ import thừa toàn bộ assistant.py (re/quote/BackgroundTasks/select/update/tasks/models_for_step/...) + biến `total_duration` thừa | 2026-11-08 |
-| **Regression fix (Bug 9):** video model admin khoá vào .env — autopipeline đọc key qua `adminmodels.creds()` thay vì `row.api_key` rỗng | 2026-11-08 |
-| Skeleton loading `.sk-grid/.sk-med/.sk-line` + shimmer (thay spinner ở 11 tab) | 2026-11-08 |
-| Client file-info (`wireFileInfo`): tên + KB/MB sau chọn/drag-drop ở AI/batch upload | 2026-11-08 |
-| Library "edit before submit" đã hoạt động (form prefill `prefInputs` vào mọi input text layer) — xác nhận + đánh dấu ✅ | 2026-11-08 |
-| **Admin "💾 Lưu tất cả"**: bảng "Model do admin đã thêm" không còn Lưu từng dòng — 1 nút vàng lưu giá+trạng thái của TẤT CẢ model trong bảng (loop PUT từng model, báo số lưu thành công/lỗi) | 2026-11-08 (UI serve từ đĩa, không cần restart; Playwright OK) |
-| **Nút "📈 Điền giá ≥ Hoà vốn"** (task #0): tự điền giá tối thiểu cho các ô giá đang 0 = giá gốc ÷ vnpc, làm tròn lên 0.1 credit, không tự lưu — admin duyệt rồi Lưu tất cả | 2026-11-09 (node --check OK; server 8001 PID 7864, GET / 200, HTML phục vụ có `pc-fill-be`) |
-| Bug 13 (mới): `tests/test_ui.py` thiếu skip-guard → 8 ERROR; thêm `pytestmark skipif` cùng điều kiện test_e2e → 168 passed, 15 skipped, 0 errors | 2026-11-09 |
-| Bug 14 (mới): Docker Compose `8000:8000` không có listener (Dockerfile EXPOSE 8001, CMD `${PORT:-8001}`) → đổi compose thành `8001:8001` | 2026-11-09 (chưa build thử — máy dev không có Docker) |
-| Bug 15 (mới): `.env.example` lệch `config.py` (MINIMAX_BASE_URL → api.xah.io, QUERY_PATH → `/v2/query/video_generation/{task_id}`) + thiếu biến (HUGGINGFACE_API_KEY, SWEEP/AI_TIMEOUT/LOGIN/REGISTER) + xoá section Muse (feature đã xoá) | 2026-11-09 |
-| Dọn INKSTONE trong tests: gỡ `INKSTONE_API_KEY` (conftest), `INKSTONE_BASE_URL/API_KEY` + **xoá class FakeInkstone + shutdown** (test_e2e); ép `VILAO_BASE_URL/API_KEY=""` trong conftest và Stack.env → unit test không kế thừa key thật của dev | 2026-11-09 |
-| **Batch retry sản phẩm lỗi** (task #8/B6): `POST /api/assistant/batch/{id}/retry-failed` + `retry_batch_items()` chạy lại CHỈ item `failed` (reset về queued, chạy tuần tự lại); UI nút "🔁 Thử lại N sản phẩm lỗi (tốn credit)" + `pollBatch()` dùng chung; test mới `test_retry_failed_items_runs_only_failures` | 2026-11-09 (pytest 169 passed) |
-| **Top-up expiry UI**: expire QR sau 5 phút (`expire_transactions` chạy mỗi 30s bởi Sweeper — đã có sẵn) + UI báo "Mã đã hết hạn" + nút **🔁 Tạo lại mã** khi hết hạn; giao dịch phải tạo mới để nạp tiếp | 2026-11-09 |
-| **💸 Credit Ledger + UI lịch sử dòng tiền cá nhân**: bảng `credit_ledger` (migration 0011) + `CreditLedgerEntry`; mọi cộng/trừ credit (charge/refund/topup/adjustment) ghi 1 dòng append-only kèm lý do + ref_type/ref_id; endpoint `GET /api/auth/me/credit-ledger`; UI "💸 Dòng tiền" trên trang Nạp hiển thị 50 giao dịch gần nhất; 4 test mới `test_credit_ledger.py` | 2026-11-09 (pytest 176 passed) |
-| **Hoàn thiện Dịch & Phụ đề (Bug 19)**: `TRANSLATE_LANG_CHOICES` (12 ngôn ngữ); `target_lang` + `_translate_hf` (opus-mt-<src>-<tgt>); `_parse_srt` + `_render_dub` (TTS từng câu → adelay → amix); `/process` hỗ trợ `tts_voice`/`keep_original_audio`/`src_volume`; UI: `sub-lang` dropdown nguồn→đích tự dịch, card "5. Lồng tiếng TTS" với `#dub-voice` + `#chk-keep-origin-audio`; lưu giữ âm gốc mặc định tắt | 2026-11-10 (pytest 176 passed) |
-| **Chuyển HF key ra khỏi tầm nhìn user + sửa tính năng Dịch & Phụ đề (Bug 19)**: xoá card HF + input + badge khỏi UI; `/hf-status` chỉ trả `configured`; backend chỉ đọc `HUGGINGFACE_API_KEY` từ `.env`; fix faster-whisper fallback (ffmpeg PCM decode, không dùng PyAV); verify local whisper nhận dạng đúng | 2026-11-09 (pytest 176 passed) |
-| **Template của tôi: ghi save tách + incremental + resume** (Bug 20, 2026-11-10): `save_pipeline_template()` luôn upsert; cũng gọi khi bắt đầu job, sau planning, sau keyframing, sau rendering, sau scene video done, khi pipeline done, khi fail. `source_feature` (`standard|text_to_video|image_to_video|images_only|review_outfit|batch`) + `stage` (plan/keyframed/done). UI: badge feature cho "Dự án đã lưu"; chi tiết hiển thị badge feature; nút "Tạo lại N cảnh lỗi" (client-side, gọi `/retry-failed`); reuse giữ nguyên toàn bộ cấu hình kể cả prompt + ảnh (character + outfit) | 2026-11-10 (pytest 176 passed) |
-| **Lồng tiếng TTS** (2026-11-10): `/process` với `tts_voice` tạo file TTS cho từng câu phụ đề đúng mốc thời gian + amix vs gốc (hoặc tắt gốc) | 2026-11-10 |
-| **Admin toàn quyền quản lý giọng clone** (data tổng): admin-view **`/api/admin/voices-cloned`** (list tất cả, kèm `owner_username`, engine, trạng thái clone) + **`DELETE /api/admin/voices-cloned/{vid}`** (admin xoá bất kỳ giọng nào, gồm cả clone trên provider); UI tab **Tài khoản admin** có card "🎤 Giọng clone toàn hệ thống" với nghe/xoá; giọng của từng account vẫn chỉ thuộc account đó | 2026-11-09 |
-| **Rollback giá glm-5-3-flash**: 0.1 → 0 (tool chỉ trừ theo giá admin đặt, không tự tăng giá) | 2026-11-09 |
-| **ElevenLabs voice clone thật** (task #7/A11): `app/config.py` thêm `elevenlabs_api_key`; `app/tts.py` thêm `ELEVEN_PREFIX="el:"`, `clone_voice()`/`delete_elevenlabs_voice()`/`gen_clone_tts()`, `resolve_voice` passthrough, `gen_tts` dispatch `el:` → clone; upload mẫu có key → tự clone (meta `provider`/`provider_voice_id`/`voice_value`); voices-cloned trả `voice_value`; xoá giọng xoá cả clone; UI dropdown `el:` + badge clone/chỉ lưu mẫu; preview cho phép `el:`; `.env.example` thêm `ELEVENLABS_API_KEY` | 2026-11-09 (3 test mới, pytest 172 passed) |
-| **README viết lại** (task #2): bỏ "AI Inkstone (14 model)" — section Model AI → "gateway Vilao + admin-managed"; bảng giá credit/**request**; test count 168/15 skipped; bảng test đầy đủ 10 file mới; `/media` gồm voices/; ngrok/webhook localhost:8001; `grep INKSTONE` = 0 | 2026-11-09 |
-| **roadmap viết lại** (task #3): API names thực (`/api/assistant/pipeline`, modes, `/api/video/process`, …), kiến trúc đúng (Vilao gateway admin-managed, không built-in), backlog thực tế 7 mục | 2026-11-09 |
-| **Pipeline job persistence (B9, task #4/#9)**: bảng `pipeline_jobs` (migration 0010) + `PipelineJobState`; `_persist_snapshot()` lưu mọi thay đổi trạng thái/tiến trình/kết quả; `get_job()` rehydrate từ snapshot sau restart; `recover_interrupted_jobs()` lúc startup đánh `failed` cho job dở; `init()` gọi khi khởi động | 2026-11-09 (pytest 168 passed, 15 skipped) |
-| **Launcher tự xử lý port 10048**: `run.py` kiểm tra process đang nghe cổng; nếu là server Video Template SaaS cũ thì tự dừng và khởi động bản mới, nếu là process lạ thì không tự kill | 2026-11-09 (py_compile + chạy thật, HTTP 200) |
-| Fix video final thiếu giây → đã bỏ editor (thay bằng clip phôi) | 2026-11-05 |
-| `apad=whole_duration` → `whole_dur` (không còn áp dụng sau khi bỏ editor) | 2026-11-05 |
-| **Bug 21 — fix 500 `/api/generate` AI video**: thêm `pricing.video_cost()` (compat per-second cho K_H3 legacy, 0 khi không có dòng giá); 2 test mới `test_video_cost_*` | 2026-11-10 (pytest 178 passed) |
-| **Bug 22 — fix SyntaxError Python 3.11** (`videopipeline.py:163` f-string backslash trong biểu thức → Docker build vỡ): tách chuỗi ra khỏi f-string; verify `ast.parse(feature_version=(3,11))` OK | 2026-11-10 |
-| **Bug 23 — DOWNLOAD_PROGRESS giữ `user_id`** khi cập nhật từng item + khi done (trước đó lộ tiến trình giữa user) | 2026-11-10 |
-| **Bug 24 — fix XSS danh mục Template của tôi**: nút "Làm mới" bỏ inline `onclick` (chèn `activeCat` raw) → bind qua closure `#btn-tpl-refresh` | 2026-11-10 |
-| **Quét dự án lại (2 agent read-only)**: frontend 13 tab + 29 tính năng UI đều CÓ, không fetch trỏ endpoint sai; backend ~90 route không trùng, migration 0001→0011 liên tục; phát hiện Bug 21–24 + mục 2.5 (phát hiện mức thấp chưa fix) | 2026-11-10 |
-| **requirements.txt bổ sung** `numpy>=1.26` (import trực tiếp videotools.py:201) + `psutil>=5.9` (run.py nhánh Linux); docstring `/api/video/transcribe` sửa thành "faster-whisper local" (trước ghi HF Whisper đã chết); dead branch `_batch_or_403(...) is None` (assistant.py:631) gọn lại | 2026-11-10 |
-| **roadmap cập nhật lần 2**: jobs persistence + batch retry + ElevenLabs + dịch HF đã xong; backlog 8 mục đúng hiện trạng; `/transcribe` ghi đúng local whisper | 2026-11-10 |
-| **Bug 12 — viết lại `tests/test_ui.py`** (đợt 2): 3 journey tự chứa (đăng ký + duyệt 9 tab user / luồng VietQR / 4 tab admin), không cần redis-celery — uvicorn subprocess + Chromium; 3 passed; xoá 8 journey lỗi thời | 2026-11-10 (pytest 181 passed) |
-| **Bug 26 — Tải MXH hoàn thiện (ảnh + video)** (đợt 3): TikWM fallback cho cả 3 đường (đơn/batch/preview); post ảnh TikTok qua `data.images` → tải toàn bộ ảnh; UI render grid ảnh + nút tải từng ảnh (đơn/batch/preview); batch TikTok giờ chạy được; 3 test mới `test_download_tikwm.py` | 2026-11-10 (pytest 184 passed) |
-| **Bug 27 — FB Reel** (đợt 3): resolve trả card trống (extract_flat không lấy metadata) → **fix full-extract fallback** (title/thumbnail/duration/views đầy đủ, 3.4s); thêm `retries=3, fragment_retries=3` vào ydl_opts (download/batch/preview); AV1 transcode OK; server PID 10868 | 2026-11-10 (pytest 184 passed) |
-| **Bug 28 — Thanh tiến độ tải đơn/từng mục** (đợt 4): `/download` nhận `job_id` + byte-level progress; TikWM stream bytes + báo trạng thái `transcoding/done/failed`; batch hook sửa tổng items + đếm item xong; UI: thanh progress gold cho "Tải ngay 1 video" + dlOne dùng progress list header; verify Playwright mid/done, 0 pageerror | 2026-11-10 (pytest 184 passed, server PID 4248) |
-| **Bug 29 — Quét size trước tải + clock ETA** (đợt 5): `DOWNLOAD_MAX_MB` (mặc định 200); metadata check + ước lượng `tbr×duration` cho DASH; vượt giới hạn → 422 "Không hỗ trợ" / progress `rejected` ngay ~3s; UI: stage checking/rejected + **clock ⏱ mm:ss** đếm ngược (ETA từ yt-dlp hook/TikWM stream); verify Playwright cả cap=1 reject và cap=200 download | 2026-11-10 (pytest 184 passed, server PID 21420) |
-| **Bug 30 — Dịch & Phụ đề hoàn thiện** (đợt 6): subtitles filter path Windows → relative + `cwd` (xóa `_clean_path`); TTS `auto`→HoaiMyNeural; transcribe timeouts 600s/1800s + `vad_filter=True`; **preview WYSIWYG trực tiếp trên video** (sửa text tại chỗ, đồng bộ SRT 2 chiều, overlay vị trí/cỡ chữ live, blur box nét đứt vàng); verify E2E Playwright (transcribe→preview→edit→export) 0 pageerror | 2026-11-10 (pytest 184 passed, server PID 21172) |
-| **Bug 31 — Dịch & Phụ đề đợt 7 (quét kỹ)**: slider âm lượng âm gốc 0–100% khi lồng tiếng (không còn cứng 100%); validate vùng blur (422 rõ ràng); đồng hồ ⏳ mm:ss phiên âm; sửa trim() cắt khoảng trắng overlay; nhãn "auto" đúng sự thật; ghi chú UI về HF credits | 2026-11-10 (pytest 184 passed, server PID 22104) |
-| **Bug 32 — Dịch & Phụ đề đợt 8**: phụ đề song ngữ (gốc trên + dịch dưới, `srt_original/translated/bilingual`); layout editor trái + preview 230px phải + hướng dẫn xuống bottom; TTS cảm xúc qua `tts_emotion`; truncation diagnostic `pcm vs ffprobe`; Whisper small mặc định; TTS song ngữ chỉ đọc dòng cuối | 2026-11-10 (pytest 184 passed, server PID 19676) |
-| **Bug 33 — Dịch & Phụ đề đợt 9**: fallback Google Translate free (`client=at` + UA Android, 429→`client=mobile`); ASS subtitles (`PlayResX/Y` = video thật, font scale `height/720`) thay `subtitles=`; song ngữ hiển thị đủ 2 dòng; `has_translation` nhận ok_google; dub đọc dòng cuối (VI) | 2026-11-10 (pytest 184 passed, server PID 14952) |
-| **Mục 2.5 dọn dẹp toàn bộ** (đợt 2): logging thay silent pass (autopipeline ×3, minimax, admin); xoá dead config (AI_VIDEO_CREDITS_PER_SEC, MUSE_*, HUNYUAN_*, WAN21_*) + `.env.example`; gộp `_voice_meta_dir`→`media.voice_meta_dir`; xoá `available_steps`, `_REVIEW_PHASES`; UI dead state + `bindImagePages()` + Audio.play `.catch`; `pytest`→requirements-dev.txt (CI OK) | 2026-11-10 (pytest 181 passed) |
-
-| **Dịch & Phụ đề viết lại** (đợt 2026-11-11): module `app/subtitles.py` — mặc định medium, VAD mềm, vá khoảng lặng bị VAD cắt, LLM sửa lỗi nghe + dịch theo ngữ cảnh JSON (giữ mốc TG, ≤42 ký tự/dòng), wrap subtitle, dropdown Độ chính xác (fast/accurate/best), tick "Dùng AI"; 11 test mới | 2026-11-11 (pytest 203 passed) |
-| **Trang pháp lý 7 trang** (terms/privacy/refund/acceptable-use/disclaimer/about/contact) server-side dark-gold — style đồng nhất `app/site_shell.py` | 2026-11-11 |
-| **Chat AI hỗ trợ** (bong bóng 💬 góc phải dưới): trả lời theo tài liệu sản phẩm, 40 câu/giờ/user, lưu lịch sử riêng từng tài khoản vào DB (`chat_messages`, migration 0012); 🗑 xoá lịch sử | 2026-11-11 (migration 0012) |
-| **Nút hỗ trợ Zalo/Facebook** (icon brand SVG) cạnh tên/credit; admin đặt link trong tab Admin ("Liên hệ hỗ trợ" → `app_settings`) | 2026-11-11 |
-| **Tách dữ liệu theo tài khoản**: `uploads/u<id>/` `outputs/u<id>/` `voices/u<id>/` mọi file (upload, giọng clone, tải MXH, phụ đề, render) | 2026-11-11 |
-| **Landing page `/`** công khai (nav + hero + features + docs grid); tool dời vào **`/dashboard`**, chưa đăng nhập → về `/`; logo sidebar → `/` | 2026-11-11 |
-| **`/pricing` render động từ DB admin** (`pricing_items` + `app_models`): chi tiết từng model, giá bán credit + quy đổi đ, đơn vị (clip/ảnh/lần gọi), cách tính credit | 2026-11-11 |
-| **Đăng ký bắt buộc SĐT + OTP 6 số** (`app/otp.py`, ESMS.vn, hash sha256, TTL 5 phút, 5 lần nhập); `APP_ENV=production` + chưa có ESMS → 503; migration **0013** | 2026-11-11 |
-| **Style đồng nhất toàn site** (`app/site_shell.py` shared chrome) + **animations** (rise/pop/lift/FAB pulse, reduced-motion tôn trọng) + **sidebar thu gọn** (icon-only, lưu `localStorage`) | 2026-11-11 |
-| **Fix 4 điểm user (đợt 6)**: #1 tabs chính sách chuyển từ nav sidebar → footer tool; #2 bảng giá đồng bộ admin + chi tiết từng model; #3 `/dashboard` chưa đăng nhập → về trang chủ; #4 bỏ hub `/docs` trùng lặp (`/docs` → 301 `/#docs`) | 2026-11-11 |
-| **Bug `/docs` bị Swagger UI đè** → `FastAPI(docs_url=None, redoc_url=None)`; `/openapi.json` giữ nguyên | 2026-11-11 |
-| **Migration 0012 `chat_messages` + 0013 `phone_otps`**; verify trên bản copy DB thật (21 user còn nguyên) | 2026-11-11 |
-| **`/` = landing page; tool ở `/dashboard`**; test_ui chuyển sang `/dashboard?login=1` | 2026-11-11 |
-
-### ⬜ CHƯA XONG — làm theo thứ tự
-
-| # | Ưu tiên | Việc | File |
-|---|---------|------|------|
-| 0 | ✅ | **Giá tool cho từng model** — 2026-11-11 verify DB: **veo-3 = 5.7 (≥ hoà vốn 3.0)** · **gemini-omni-flash-preview = 10.05 (≥ 5.0)** · glm-5.3-flash 0.01 · deepseek-llm 0.03 · gemini-image 0.16 · minimax-m3 0.05 · claude-opus-5 0.01 → **không còn model lỗ**. (Số cũ 0.7 / 1.75 trong bản ghi 09/11 đã lỗi thời — đã tự cập nhật lại theo DB) | — |
-| 1 | 🟡 | Test live 1 video review outfit + 1 batch 2 sản phẩm + Veo lip-sync (gateway vilao, tốn credit) — user duyệt trước | gateway vilao |
-| 2 | 🟡 | ~~Clone giọng THẬT~~ **✅ code 2026-11-09** — engine ElevenLabs đã tích hợp (`ELEVENLABS_API_KEY`; upload mẫu → clone thật → dropdown `el:<voice_id>`; preview/TTS dispatch qua prefix `el:`). **Chưa gen thật** — cần admin đặt key + duyệt credit ElevenLabs; nếu không đặt key thì upload chỉ lưu mẫu như trước | app/tts.py, assistant.py |
-| 3 | 🟡 | ~~Lưu job pipeline vào DB/Redis~~ **✅ 2026-11-09** — bảng `pipeline_jobs` (migration 0010, SQLite, không cần Redis); snapshot + rehydrate + đánh failed khi restart (B9) | app/autopipeline.py |
-| 4 | 🟡 | ~~Nút "Thử lại sản phẩm lỗi" trong batch~~ **✅ 2026-11-09** — endpoint `POST /api/assistant/batch/{id}/retry-failed` + nút UI "🔁 Thử lại N sản phẩm lỗi" (reset item `failed` về queued, chạy lại tuần tự; credit trừ như lần đầu); test mới `test_retry_failed_items_runs_only_failures` — **169 passed**. (1 item lỗi thường tốn 1 video request — cần duyệt credit khi chạy thật) | assistant router / UI / tests/test_batch.py |
-| 5 | ✅ | ~~Viết lại `tests/test_ui.py` theo UI mới (Bug 12)~~ **✅ 2026-11-10 (đợt 2)** — 3 journey tự chứa không cần redis/celery; 3 passed thật; suite **181 passed, 7 skipped** | tests/test_ui.py |
-| 6 | 🟡 | **Dịch & Phụ đề** — đã viết lại 2026-11-11 (`app/subtitles.py`): LLM dịch theo ngữ cảnh là engine chính (HF 402 không còn chặn; Google Translate free vẫn là fallback). **Còn lại:** chưa gọi LLM thật 1 lần (tốn credit — chờ user duyệt); HF nếu muốn dùng thì phải nạp credit | app/subtitles.py, app/routers/videotools.py |
-| 7 | ✅ | ~~Toàn bộ công việc mới CHƯA COMMIT / repo rebase dở (Bug 17)~~ **BỎ KHỎI DANH SÁCH — user quyết định 2026-11-11**: git không cần làm lúc này (dự án đã publish domain), khi nào cần sẽ làm tiếp. **Tôi không đụng git.** | git, .gitignore |
-| 8 | ✅ | ~~Publish dự án ra public~~ **✅ 2026-11-11** — `studioai.id.vn` (Cloudflare Tunnel + Docker Compose + Task Scheduler) — chi tiết mục 8. **Việc còn lại:** Docker image đang live là bản build ~11:30 sáng (trước công việc chiều nay) → **cần rebuild image + recreate container để domain nhận code mới** (chỉ khi user ra lệnh) | docker-compose.yml, deploy/update.ps1 |
-| 9 | 🟡 | **Rebuild Docker image + recreate container** — đưa toàn bộ code 2026-11-11 lên domain (hiện image live là bản ~11:30). **CHỈ làm khi user ra lệnh** (quy tắc bắt buộc đầu file) | docker build, docker compose up, deploy/update.ps1 |
-| 10 | 🔴 | **SMS OTP — cần tài khoản ESMS.vn** (`ESMS_API_KEY`, `ESMS_API_SECRET`): chưa có thì `APP_ENV=production` **chặn đăng ký (503)** — cần đăng ký ESMS.vn rồi điền key vào `.env` | .env, app/otp.py |
-| 11 | ⏸️ | **Webhook SePay 401 — user YÊU CẦU ĐỂ SAU (2026-11-10)**: SePay "Gửi test" không gửi header auth → app 401; đã vào `.env` đúng API key + hướng dẫn tạo webhook chế độ "API Key". **Tạm hoãn** — chờ user quay lại cấu hình; khi làm tiếp: verify webhook trả 200 rồi xoá dòng log chẩn đoán `webhook auth miss` (billing.py:137) | billing.py, my.sepay.vn |
-
-**Sau mỗi lần sửa:** chạy `python -m pytest tests/ -q`, verify server/UI, cập nhật file này (đánh ✅ + ngày).
-
----
-
-## 6. PHƯƠNG PHÁP LÀM VIỆC — đã dùng trong phiên 2026-11-08
-
-> Ghi lại để lần sau/agent khác làm theo, không phải khám phá lại. Mọi phương pháp dưới đây đã được verify thực tế trong phiên 08/11.
-
-### 6.1. Quy trình chuẩn cho mỗi task (bắt buộc làm theo thứ tự)
-1. **Đọc `fix_bug` mục 2/3/5 trước** — không làm lại task đã ✅ (chống lặp).
-2. **Khảo sát TRƯỚC khi sửa**: grep từ khóa chính trong đúng file (`Grep tool`, không dùng `grep` CLI), đọc đoạn code quanh kết quả (Read ±20 dòng), xác định chính xác vị trí + ngữ cảnh trước khi Edit.
-3. **Sửa bằng Edit tool (old_string/new_string)** — luôn đọc file trước Edit; với block JS/HTML lớn thì splice bằng Python script (index giữa 2 marker, ghi đè) thay vì Edit nhiều lần (xem mục 6.4).
-4. **Chạy test**: `PYTHONIOENCODING=utf-8 python -m pytest tests/ -q` — ghi nhận số passed/skipped/errors **trước và sau** để chắc không vỡ.
-5. **Restart server 8001** (xem mục 0): kiểm tra port giữ (`Get-NetTCPConnection -LocalPort 8001 -State Listen`), xem ProcessId + StartTime, **xin phép user trước khi kill**, `Stop-Process -Id <pid> -Force`, chạy `python run.py --port 8001` ẩn (`Start-Process -WindowStyle Hidden`), verify `GET /` 200 + `/openapi.json` có route mới.
-6. **Verify thật**: GET / 200; OpenAPI liệt kê route mới; với UI: **Playwright chụp screenshot từng tab đã sửa** + thu `pageerror`/`console.error` (phải **rỗng**); với DB: sqlite3 read-only để xác nhận không còn key/mật dữ liệu sai trong bảng.
-7. **Cập nhật `fix_bug`** ngay sau khi xong (mục 0 + mục 2/3 + mục 5, đánh ✅ + ngày + số test).
-
-### 6.2. Khảo sát tính năng toàn dự án (chi phí thấp, độ bao phủ lớn)
-- **2 Explore agent chạy song song** (frontend `static/index.html` + backend `app/routers/`):1 agent liệt kê tabs/nút/fetch nhưng CẤM sửa file, bắt buộc report file:line. Main session verify lại kết luận của agent TRƯỚC khi dùng (vd agent frontend nói "tab Nhật ký tài khoản tồn tại" → fix_bug cũ ghi sai "chưa có UI" → sửa lại bảng).
-- **Đọc `roadmap` file** để đối chiếu yêu cầu gốc (7 yêu cầu) với hiện trạng.
-- **Quy tắc "claim phải verify"**: mọi phát hiện ghi vào fix_bug phải kèm bằng chứng đọc được (đường dẫn + dòng), không copy từ agent hay memory mà chưa đối chiếu code.
-
-### 6.3. Test & verify an toàn
-- **Không bao giờ test ghi vào `.env` thật**: conftest.py đặt `APP_ENV_FILE` trỏ file tạm (`{_tmp}/test.env`) → `env_upsert` của app ghi key model admin vào file test. Nếu không có biến này, toàn bộ test hiện có sẽ phá `.env` sản xuất (VILAO/Model key). **Mọi lần chạy test phải kiểm tra `conftest.py` set `APP_ENV_FILE` trước khi thêm tính năng ghi file.**
-- **Seed data tạm để chụp hover/trạng thái** (preview seed project) thay vì dùng dữ liệu thật.
-- **Playwright smoke cho UI**: sau mỗi thay đổi HTML/JS, chụp screenshot từng tab động (AI/Batch/Promo/Library/MyTemplates/History) trên server vừa restart; **thu `pageerror`/`console error`** — phải rỗng. Script mẫu ở `C:\Users\Admin\AppData\Local\Temp\smoke_ui.py` (đừng `print()` chuỗi chứa tiếng Việt trên console cp1252 — ghi ra file UTF-8 thay vì print, hoặc `.encode('utf-8','replace')`).
-- **edge-tts dùng để test TTS thật miễn phí** (không tốn credit vilao): tạo `outputs/tts_demo_*.mp3` với nhiều cảm xúc → user nghe trực tiếp, vừa test vừa trình diễn.
-- **API vilao tốn credit** → tuyệt đối không gen live; ưu tiên `tests/fakes.py` (fake gateway MiniMax/OpenAI-style).
-
-### 6.4. Kỹ thuật chỉnh file lớn (`static/index.html`, 3300+ dòng, single-file SPA)
-- JS nằm trong **1 block `<script>`** trong HTML; `node --check` trực tiếp trên HTML **không được** — phải extract block ra file `.js` tạm rồi `node --check`:
-  ```
-  python -c "import re,io; src=io.open('static/index.html',encoding='utf-8').read(); io.open('/tmp/ui_check.js','w',encoding='utf-8').write(re.findall(r'<script>(.*?)</script>', src, re.S)[0])"
-  node --check /tmp/ui_check.js
-  ```
-- Block JS lớn (vd pgPromos mới): viết block mới vào file tạm trong scratchpad, rồi **splice bằng Python** (`src.index(start_marker)`, `src.index(end_marker)`, ghi đè) thay vì Edit nhiều lần — tránh ghi thừa/sót dòng.
-- UI ID/click handlers **không được đổi tên ID** khi redesign (đã giữ toàn bộ ID); thay đổi CSS/markup phải giữ `querySelector('#id')` hợp lệ, `node --check` pass.
-
-### 6.5. Quy tắc Edit/ghi file an toàn
-- **Luôn Read file trước khi Edit** (tool bắt buộc); với file lớn chỉ đọc đoạn cần sửa (offset ±30 dòng).
-- Dùng `Edit` với old_string đủ dài để unique; không replace_all khi không cần.
-- **Không đụng git** (rebase dở — xem mục 4).
-- **Không tự ý kill process 8001** mà chưa xin phép user (quy tắc 05/11).
-- Windows console mặc định cp1252 → khi cần in tiếng Việt/UTF-8 ra console, set `PYTHONIOENCODING=utf-8` và/hoặc ghi ra file UTF-8 thay vì print; không dùng `python -I` khi cần `import app.*` (isolation bỏ cwd khỏi sys.path) — dùng `cd` + python thường hoặc thêm sys.path.
-
-### 6.6. Pattern đã thiết lập trong codebase (bổ sung nếu làm tiếp)
-- **API key lưu .env không lưu DB** (Bug 9): `app/config.py` → `env_upsert()` (ghi dòng `MODEL_<ID>_API_KEY=...` trong `.env` + cập nhật `os.environ` live, đồng thời quản lý cả xóa dòng); `model_key_env()`; `ENV_FILE` có thể override bằng `APP_ENV_FILE`; `sync()` tự migrate DB→`.env` lúc startup. Xem test `tests/test_reuse_envkeys.py`.
-- **Endpoint dùng chung lõi** (Bug 6): tách `_create_and_dispatch()` từ `/generate` để `/reuse` tái dùng (trừ credit + log activity + dispatch job Giống hệt luồng gốc). Pattern tham khảo cho "Dùng lại" bất kỳ tính năng nào.
-- **Drag-drop upload**: `attachDrop(inputId, maxFiles)` trong `static/index.html` — gán cho mọi `<input type=file>`; CSS `.drop-hover` (viền gold dashed + nền `var(--gold-soft)`).
-- **TTS emotion engine**: `app/tts.py` — ~28 tag cảm xúc vi/en → `(rate, pitch, volume)`; match bằng `_strip_accents(...)` (bỏ dấu, lowercase) + ưu tiên cụm dài nhất (`sorted(keys, key=len, reverse=True)`); `emotion_cue_en()` trả cue diễn xuất tiếng Anh nhúng vào video prompt; `gen_tts(..., volume=...)` nhận volume mới của edge-tts.
-- **Batch ETA**: `BatchItem.started_at`/`finished_at` (ISO) + `to_dict()` xuất kèm; frontend `pgBatch.renderBatch` tính avg thời gian gen mỗi item → hiển thị "⏱ Ước tính còn ~N phút".
-- **Giá tool tối thiểu (≥ Hoà vốn)**: helper `beNum(pc, m, vnpc)` tính break-even = `price_per_request / vnpc` (null khi pricing_mode=token hoặc không có provider-costs); nút **"📈 Điền giá ≥ Hoà vốn"** chỉ điền vào các ô đang 0, làm tròn **lên** theo bước 0.1 credit (đảm bảo ≥ hoà vốn), **không tự lưu** — admin xem lại rồi bấm 💾 Lưu tất cả. Quy tắc: không tự đặt giá thực sau lưng admin (quyết định kinh doanh).
-- **Test không kế thừa env thật của dev**: `tests/conftest.py` set `APP_ENV_FILE` (chống ghi .env thật) **và** `VILAO_BASE_URL=""`/`VILAO_API_KEY=""` (chặn kế thừa key thật qua `os.environ` → không gọi API thật); `test_e2e.py` Stack.env cũng ép `VILAO_*` rỗng cho subprocess uvicorn. Khi thêm biến env mới đọc từ `config.py`, thêm luôn vào cả 2 chỗ.
-- **Skip-guard cho test cần binary ngoài**: test nào phụ thuộc ffmpeg/redis-server/celery/chromium phải có `pytestmark = pytest.mark.skipif(not shutil.which(...))` — không thì máy thiếu binary báo ERROR thay vì SKIP, che mất lỗi test thật. Áp dụng cho cả file import fixture từ file khác (skipmark không tự lan qua import).
-- **Pipeline job snapshot (persistence)**: model `PipelineJobState` (`pipeline_jobs`); helper `_persist_snapshot()` called trong `PipelineJob.update()` + `cancel()` + `create_job()`; mọi DB lỗi chỉ `except Exception: pass` — job vẫn chạy; `get_job()` rehydrate từ snapshot (không resume job, chỉ phục hồi hiển thị/retry); `recover_interrupted_jobs()` lúc startup đánh failed + ghi chú cho job dở.
-- **Voice clone thật (ElevenLabs)**: `tts.py` dispatch voice prefix `el:` → `gen_clone_tts` (httpx POST `/v1/text-to-speech/{id}`), `resolve_voice` passthrough; upload mẫu khi có `ELEVENLABS_API_KEY` → tự gọi `voices/add` (multipart) lưu `provider_voice_id`/`voice_value` trong meta JSON (`voices_meta/` ngoài public dir); voices-cloned trả `voice_value` (`el:<id>`) để UI đưa vào dropdown; xoá giọng cũng xoá clone provider (best effort). **Không có key → meta `provider:"none"`, upload vẫn lưu mẫu, pipeline vẫn dùng edge-tts.**
-- **TrackGen progress**: không dùng % cứng; creep theo thời gian (`Math.min(88, 10 + sec*k)`, k=0.7 AI / 3 fast) + chỉ còn 12%→88%, cap 88% để không giả vờ xong sớm.
-- **Promotions admin UI**: form CRUD động trong `pgPromos()` (nút ＋Thêm, tier động, datetime-local, xóa/cập nhật).
-- **Secret handling**: không bao giờ in raw key ra log/response; `to_dict()` trả masked key (`sk-…7890`); `.env` chỉ admin thấy; khi verify migration chỉ liệt kê **tên** biến (`grep '^MODEL_.*_API_KEY' .env`) chứ không in giá trị.
-
-### 6.7. Quy tắc giao tiếp & cập nhật trạng thái
-- User nói **tiếng Việt** → trả lời tiếng Việt; hướng dẫn thao tác **tách từng lệnh** một.
-- Cuối mỗi task lớn: cập nhật `fix_bug` (✅ + ngày + pytest count) + memory khi có quy tắc/quyết định mới của user.
-- Trước khi nhận task mới: đọc `fix_bug` + mục 5 "ĐÃ XONG — KHÔNG LÀM LẠI" (chống lặp).
-- Khi API thật (vilao) cần test: chỉ gen 1 lần ngắn (4–8s) để verify sau khi user duyệt tốn credit.
-
----
-
-## 7. PUBLISH DỰ ÁN — kế hoạch deploy public (2026-11-09)
-
-> Nguồn: phiên phân tích đối thủ lamclip.com + lên kế hoạch hạ tầng cho Video Template SaaS.
-> **Trạng thái: ⬜ CHƯA LÀM GÌ CẢ** — chỉ có kế hoạch. Bước đầu tiên: user chọn VPS + đăng ký domain.
-> Bối cảnh: user so giá với lamclip.com (đối thủ cùng mô hình credit 1.000đ/credit = 1 xu của họ) và muốn đưa dự án lên public cho người khác dùng.
-
-### 7.1. Phân tích lamclip.com (đối thủ) — phát hiện ngày 2026-11-09
-
-**Hạ tầng (verify thật qua DNS/API):**
-| Lớp | Nhà cung cấp | Bằng chứng |
-|-----|--------------|-----------|
-| CDN/Proxy | Cloudflare | NS `cleo/vita.ns.cloudflare.com`, header `Server: cloudflare` |
-| Origin IPv4 | SIBERFY (PRIVATE) LIMITED, AS135598, **Singapore** — VPS nhỏ, đang chết (502) | `m.lamclip.com` → `167.254.241.87` (subdomain không qua proxy nên lộ) |
-| Origin IPv6 | **Viettel Group AS7552, Hà Nội** — server chính, đang sống | AAAA `2402:800:20ff:109c::1` trỏ thẳng origin (lỗi cấu hình — lộ IP); `/api/health` qua IPv6 trả 200, DB 4.320 videos |
-| Mail | Zoho (free) | MX `mx*.zoho.com` |
-
-**Stack model (lộ qua `/api/pricing` + `/api/health` công khai):** kịch bản `qwen3.7-plus` (Alibaba), video `Veo-3.1` (Google), ảnh `gpt-image-2` (OpenAI); catalog còn Wan 2.1/2.7/3.0 + HappyHorse (Alibaba open-source), Grok Imagine 1.5 "(qua Seedvis)" — Seedvis.com là reseller API gateway nhỏ (thấy trong group FB reseller VN); Muse Video/Image "chạy trên máy chủ nội bộ" = cookie-pool self-host (cùng kiểu `muse_adapter.py` + Muse Kit mà dự án này từng có rồi xoá).
-
-**Giá:** 1 xu = 1.000đ — **cùng đơn vị credit với dự án của mình** (50 credit = 50 xu). Markup rất dày so với giá gốc API (Veo 3.1 8s 720p bán 700 xu = 700kđ, giá gốc ~80kđ ≈ 9x; GPT Image ~20–40x; HappyHorse 200–800 xu/s). Wan 2.7 T2V 480p = 0 xu/s (loss-leader). Kết luận cho mình: giá lamclip KHÔNG rẻ — nếu mình bán cao hơn thì vấn đề là margin mình đặt, không phải họ có nguồn rẻ hơn.
-
-**4 lỗi của họ cần tránh (không chép nguyên):**
-| Lỗi của lamclip | Cách mình làm đúng |
-|-----------------|--------------------|
-| Lộ origin qua AAAA (IP Viettel công khai), Cloudflare chỉ che IPv4 | Dùng **Cloudflare Tunnel** — không mở port 80/443, không lộ IP nào |
-| 1 VPS duy nhất, origin chết → 502 kéo dài, không ai sửa | `restart: unless-stopped` (compose đã có) + healthcheck + **backup DB hằng ngày ra ngoài** + Cloudflare health notification |
-| `/api/health` công khai lộ stack (`qwen3.7-plus`, `Veo-3.1`, `gpt-image-2`) | Giữ `/api/health` chỉ trả `{"status":"ok"}` hoặc chặn bằng Cloudflare Access |
-| `/api/pricing` + `/api/status` lộ toàn bộ catalog + giá vốn | Không expose endpoint nội bộ; trang giá public chỉ trả tên + giá bán |
-
-### 7.2. Địa chỉ đăng ký dịch vụ
-
-| Dịch vụ | Địa chỉ | Ghi chú |
-|---------|---------|---------|
-| Tên miền | https://dash.cloudflare.com (Registrar, giá gốc) · https://tenten.vn · https://pavietnam.vn | .com ~250–300k/năm; .vn cần CCCD/GPKD |
-| Cloudflare (DNS + CDN + Tunnel) | https://dash.cloudflare.com/sign-up | Gói Free đủ dùng |
-| VPS Việt Nam | https://cloud.viettel.vn · https://tinanet.vn · https://bizflycloud.vn · https://vinahost.vn | Chọn **4 vCPU / 8GB RAM / 100GB SSD**, Ubuntu 24.04 (app có ffmpeg + whisper, đừng chọn 2GB) |
-| VPS Singapore (nếu cần quốc tế) | https://www.vultr.com · https://www.digitalocean.com · https://contabo.com | Region Singapore |
-| Mail doanh nghiệp | https://www.zoho.com/mail/ | Forever Free 5 user |
-| Thanh toán VN | https://sepay.vn · https://casso.vn | Webhook về domain của mình |
-| Giọng clone | https://elevenlabs.io | Lấy `ELEVENLABS_API_KEY` |
-| Whisper fallback | https://huggingface.co/settings/tokens | Token cần quyền Inference |
-
-Chi phí tối thiểu: domain ~25k/tháng + VPS 4CPU/8GB ~300–500k/tháng + Cloudflare/Zoho free ≈ **350–550k/tháng**.
-
-### 7.3. Các bước deploy trên VPS (Ubuntu 24.04)
-
-1. **Chuẩn bị VPS:**
-   ```bash
-   adduser deploy && usermod -aG sudo deploy
-   ufw allow 22/tcp && ufw enable        # CHỈ mở SSH, không mở 80/443
-   apt update && apt install -y docker.io docker-compose-v2 git
-   ```
-2. **Lấy code + cấu hình:**
-   ```bash
-   su - deploy
-   git clone <repo> app && cd app
-   cp .env.example .env && nano .env
-   ```
-   Điền tối thiểu: `SECRET_KEY` (`openssl rand -hex 32`), `ADMIN_USERNAME/EMAIL/PASSWORD`, `VILAO_API_KEY`, `DATABASE_URL=sqlite:////app/storage/app.db`, `SEPAY_API_KEY` hoặc `CASSO_SECURE_TOKEN`.
-3. **Chạy app:** `docker compose up -d --build` → `curl http://127.0.0.1:8001/api/health`.
-4. **Cloudflare Tunnel** (thay mở port):
-   - Dashboard https://one.dash.cloudflare.com → Networks → Tunnels → Create tunnel → copy token.
-   - Trên VPS:
-     ```bash
-     curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-     echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" | tee /etc/apt/sources.list.d/cloudflared.list
-     apt update && apt install -y cloudflared
-     cloudflared service install <TOKEN>
-     ```
-   - Public hostname: domain của mình → service `http://localhost:8001`.
-5. **Backup tự động** (`crontab -e`):
-   ```bash
-   0 3 * * * sqlite3 /home/deploy/app/storage/app.db ".backup '/home/deploy/backup/app-$(date +\%F).db'" && find /home/deploy/backup -mtime +7 -delete
-   ```
-   (hoặc `rclone` đẩy lên Backblaze B2/S3 cho backup ngoài máy.)
-
-### 7.4. Checklist trước khi mở public
-
-- [ ] `SECRET_KEY` mới + `ADMIN_PASSWORD` mạnh (không dùng giá trị trong `.env.example`)
-- [ ] `REGISTER_PER_HOUR` đặt thấp lúc mới mở (chống spam đăng ký)
-- [ ] HTTPS qua tunnel; ngoài 22 không có port nào mở
-- [ ] Test đủ luồng: đăng ký → gen 1 clip thật → nạp QR → webhook cộng credit
-- [ ] Backup chạy được + đã thử **restore** 1 lần
-- [ ] Uptime: Cloudflare → Notifications → Health check (free)
-- [ ] GPU MimicMotion KHÔNG đặt lên VPS thường — giữ worker GPU ở máy nhà (Redis qua tunnel riêng) hoặc tắt tính năng này khi mới launch
-- [ ] `/api/health` + các endpoint nội bộ không lộ tên model/giá vốn (so với 7.1)
-
-### 7.5. Việc còn treo trước khi publish (liên kết mục 5)
-
-- Bug 17: **commit toàn bộ công việc + xử lý rebase dở** — bắt buộc xong TRƯỚC khi deploy (không có gì để clone lên VPS nếu repo chưa commit).
-- Bug 14: docker-compose đã sửa port 8001 nhưng **chưa build thử** (máy dev không có Docker) — build lần đầu sẽ làm trên VPS.
-- B16: nạp tiền tự động chưa trọn (UI không tự cập nhật số dư, webhook cần public URL — deploy public sẽ giải quyết được (c) webhook).
-- Giá model: veo-3 (0.7 < hoà vốn 3.0) và omni-flash (1.75 < hoà vốn 5.0) đang **lỗ** — admin quyết tăng giá trước khi mở bán public (mục 5, dòng 0).
-
----
-
-## 8. PUBLISH LÊN DOMAIN — ĐÃ LÀMANG (2026-11-11) — `studioai.id.vn`
-
-> **Trạng thái: ✅ LIVE** tại <https://studioai.id.vn> (200). Chọn phương án "máy nhà = VPS" thay vì thuê VPS ngoài (kế hoạch mục 7 giữ nguyên, chưa áp dụng).
-> Kiến trúc: **Cloudflare Tunnel (named, locally-managed) + Docker Compose + Windows Task Scheduler (ONSTART, SYSTEM)** — không mở port nào ra Internet, không lộ IP nhà, domain cố định + HTTPS miễn phí.
-
-### 8.1. Domain & DNS
-| Mục | Kết quả |
-|---|---|
-| Domain | `studioai.id.vn` (đăng ký qua iNET — panel OnePortal `inet.vn`, bản ghi NS/A chỉnh được) |
-| NS cũ | `sapa/laocai.vclouddns.com` → đã đổi sang `celine.ns.cloudflare.com` + `jimmy.ns.cloudflare.com` (zone thêm ở dash.cloudflare.com, gói **Free**, Full setup) |
-| Bản ghi trong zone | 1 CNAME `studioai.id.vn` → `<tunnel-uuid>.cfargotunnel.com` (Proxied) + 2 TXT `_acme-challenge.*` (DCV, **giữ lại — Cloudflare dùng để renew cert**) |
-| SSL | Universal SSL — lần đầu **Pending Validation (TXT)** vì Cloudflare không xác thực được qua HTTP (site đứng sau tunnel, app trả 404 cho `/.well-known/pki-validation/...`) → **thêm 2 bản ghi TXT** → cert OK. Mode **Full**. Custom cert chỉ có ở Business+ (không dùng được). |
-| Kiểm tra NS | `nslookup -type=NS studioai.id.vn` phải thấy `*.ns.cloudflare.com` (chờ parent `id.vn` zone tinh chỉnh, vài phút–vài giờ; serial zone `id.vn` đã tăng khi cập nhật) |
-| Khả năng thêm zone | Cloudflare Free vẫn cho thêm **subdomain** (vd `studioai.id.vn`) làm zone riêng — không cần parent domain trên Cloudflare |
-
-### 8.2. Server (Docker)
-- Image build bằng `docker build` trực tiếp (~1.7GB, `faster-whisper` nặng); **`docker compose build` bị BuildKit chặn quyền đọc Dockerfile** (exit 0 nhưng không tạo image) — dùng `docker build -t <tên-mặc-định-compose>` rồi `docker compose up -d`.
-- [docker-compose.yml](docker-compose.yml) sửa: web bind `127.0.0.1:8001` (không lộ ra LAN), healthcheck `/api/health`, `PORT=8001`, mount `./storage` + **`./.env:/app/.env`** (app ghi `MODEL_*_API_KEY` về .env khi admin thêm/sửa model — mount để không mất khi recreate; `.dockerignore` đã loại .env khỏi image).
-- `.env`: `APP_ENV` đổi `dev`→**`production`** (backup `.env.bak`, đã thêm vào `.gitignore`); `SECRET_KEY` (64) + `ADMIN_PASSWORD` (16) đã có sẵn → qua guard `APP_ENV=production` của `app/main.py::check_production_settings`. **`VILAO_BASE_URL`/`VILAO_API_KEY` rỗng** → AI vẫn chạy được nhờ 7 model admin (`MODEL_*_API_KEY`) trong `.env`.
-- Log container cho thấy: "AI features are off" (vì VILAO rỗng — bình thường) + admin session đã dùng (200). App chạy `python run.py --no-worker` (không cần Celery; `yt-dlp`/`ffmpeg`/Whisper/edge-tts đều có trong image; 12 CPU).
-- **Port 8001 phải trống**: đã dừng server dev (`python run.py --port 8001`, PID 14284) trước khi bật Docker.
-
-### 8.3. Tunnel trên Windows — BẪY & GIẢI PHÁP
-`cloudflared tunnel login/create` OK; tunnel chạy (4 kết nối QUIC hkg) và domain trả 200 khi chạy foreground.
-**Bẫy:** cài Windows Service (`cloudflared service install`) → service **luôn chạy `cloudflared.exe` KHÔNG tham số** (log: `service arguments: [C:\Program Files (x86)\cloudflared\cloudflared.exe]`) → không biết tunnel nào → exit ngay → **crash-loop** (55 lần, SCM restart mỗi 20s, Event ID 7031). `--config` truyền lúc install **KHÔNG được ghi** vào args. Local-managed tunnel không dùng được `--token-file` (token chỉ có cho remotely-managed tunnel trong dashboard).
-**Giải pháp:** **Task Scheduler** — `deploy/run-tunnel.cmd` (vòng lặp restart tunnel mỗi 5s nếu chết) + task `VideoAI-Cloudflared` (`/SC ONSTART /RU SYSTEM`), chạy dưới SYSTEM khi boot → **không cần ai đăng nhập**, không cần mở port.
-```
-schtasks /Create /TN "VideoAI-Cloudflared" /TR "<path>\deploy\run-tunnel.cmd" /SC ONSTART /RU SYSTEM /F
-schtasks /Run /TN "VideoAI-Cloudflared"
-```
-Kiểm tra: `schtasks /Query /TN "VideoAI-Cloudflared" /V` ; `Get-Process cloudflared` (session 0 = SYSTEM).
-Ngoài ra: `crontab`/Task Scheduler tạo lúc **không elevated** đều bị `schtasks`/`service install` từ chối — phải chạy trong **PowerShell Run as administrator**.
-Dọn dẹp: đã gỡ service Cloudflared crash-loop (`cloudflared service uninstall`) và kill tiến trình tunnel tạm.
-
-### 8.4. Điểm còn treo (2026-11-11)
-- **Docker Desktop không tự lên khi boot/logoff** → app/tunnel phụ thuộc. Cần bật ở Docker Desktop → Settings → General → **Start Docker Desktop when you sign in**; nếu muốn sống cả khi không đăng nhập: bật auto-login Windows (hoặc chuyển sang WSL Docker engine — chưa làm).
-- **Máy phải không ngủ** (Sleep = Never); Windows Update reboot gây downtime vài phút.
-- **Cloudflare Free**: giới hạn upload **~100MB/request** → upload video >100MB vào Dịch & Phụ đề sẽ 413. (Tải MXH không qua tunnel → không vướng.)
-- **Bot protection của Cloudflare chặn User-Agent lạ** (python-httpx bị 403) → cân nhắc tắt Bot Fight Mode/Browser Integrity Check ở Security nếu cần gọi API từ script/mobile.
-- `REGISTER_PER_HOUR=20` — ai cũng tự đăng ký tiêu credit; chưa khoá đăng ký.
-- SePay webhook: **giờ có URL public `https://studioai.id.vn`** → có thể cấu hình webhook trỏ tới đó (Bug 25 — vẫn chờ user duyệt).
-- Backup `storage/` chưa tự động hoá (xem mục 7.3 — chưa làm).
-- `.env.bak` (backup trước khi đổi production) — chưa xoá.
-- **HF cache của container nằm trong lớp ghi của chính nó** (C:\Users\Admin\AppData\Local\Docker, ~5GB) → mỗi lần recreate container là tải lại model Whisper (~460MB cho `small`). Có thể mount `./storage/hf-cache:/root/.cache/huggingface` để giữ trên D: và khỏi tải lại (cần deploy lại container).
-- **2026-11-11 — dọn ổ C:** đã xoá `C:\Users\Admin\.cache\huggingface\hub\models--Qwen--Qwen2-VL-7B-Instruct` (15.45GB, model của localpipeline đã bị xoá 02/11) → C: trống 14.9GB → **30.4GB**. Giữ nguyên cache Whisper + Playwright. **Không đụng** Lark (10.4GB), `Local\Programs` (13.3GB), Android SDK (6.7GB), `.vscode` (3GB), `dolphin_anty` (3.9GB) — user quyết định không động app của họ.
-- `deploy/README.md` viết lại theo đúng quy trình thật (iNET → NS → TXT → Task Scheduler).
-
-### 8.6. Sự cố DB 2026-11-11 — nguyên nhân + cách chữa (đọc trước khi nghịch DB)
-
-**Triệu chứng:** app log liên tục `sqlalchemy.exc.DatabaseError: (sqlite3.DatabaseError) database disk image is malformed` (query `generation_history ... updated_at <= ?`); `/api/health` vẫn 200 (không đụng DB) nhưng mọi thao tác có DB (login, register, trừ credit) lỗi 500 → người ngoài không đăng nhập được.
-
-**Nguyên nhân:** **SQLite chạy trên bind-mount Windows↔Linux** (Docker Desktop 9P) — lock/mmap của SQLite không đáng tin qua ranh giới đó → lỗi I/O/corrupted. File hoàn toàn sạch khi đọc từ Windows (`integrity_check: ok`, đọc trọn 22 users / 441 activity_logs / pricing…). Trong container đọc đúng file đó trên `/db` vừa mount → `disk I/O error` / `malformed`. **KHÔNG PHẢI lỗi code, KHÔNG phải ổ đĩa đầy, KHÔNG phải hỏng file thật.**
-
-**Cách chữa (đã làm):**
-1. Backup giữ `storage/backup-20261111_200953/{app.db,app.db-wal,app.db-shm}` (md5 trùng bản gốc). 
-2. Đưa SQLite vào **Docker named volume `dashboard-claude-wizardly-lamport-qfjxhi_videoai-db`** (ext4 trong WSL2): mount `/app/data`, đổi `DATABASE_URL=sqlite:////app/data/app.db` trong compose (web + worker-ai), `./storage` giữ nguyên cho uploads/outputs. **Không rebuild image, không rebuild code.**
-3. **DỊCH SCHEMA:** DB trên đĩa ở `alembic=0013` (đợt 7 của phiên khác — chat + phone OTP), image đang chạy trên domain chỉ có migrations tới **0011** → image cũ không khởi động được trên DB 0013. Để khôi phục mà **không redeploy code**: `UPDATE alembic_version SET version_num='0011'` (bảng `chat_messages`/`phone_otps` và cột `users.phone*` nằm im). 
-   ⚠️ Sắp xếp khi deploy code mới: image mới (0013) sẽ chạy `upgrade_db()` → `alembic upgrade 0011 -> 0013` sẽ **lỗi "table/column already exists"** vì schema đã có sẵn. Khi lệnh deploy từ user tới, phải `alembic stamp 0013` (hoặc sửa 0012/0013 thành idempotent) trước khi start image mới.
-4. Verify: `integrity_check: ok` · users = **22** · domain `/` + `/api/health` 200 · login bằng tài khoản giả → **401** (đúng, không còn 500).
-5. **Domain hiện tại chạy image cũ (0011)** — các tính năng đợt 7 (chat hỗ trợ, phone OTP, bài viết→video, preset ngành, Analytics admin, nav đăng nhập) **chưa lên deploy**. Việc deploy luôn chờ lệnh từ user (xem QUY TẮC ở đầu file).
-
-**Điều kiện phải nhớ khi làm việc với DB trong Docker Desktop trên Windows:** KHÔNG BAO GIỜ đặt SQLite trên bind-mount Windows. Muốn dữ liệu dễ xem/sao lưu từ Windows thì mount vào container nhưng **đọc/ghi qua một helper** (vd export hằng ngày) chứ không để app chạy trực tiếp.
-
-### 8.7. Deploy code mới lên domain (2026-11-11, có lệnh của user)
-
-**Trạng thái domain sau deploy:** image `48c9e47ee728` (code mới nhất trên đĩa) · DB `alembic=0013` trên named volume · **24 users** (2 tài khoản mới đăng ký sau khi site mở lại) · integrity `ok`.
-
-**Đường dẫn UI mới (thay đổi so với bản cũ):**
-| URL | Nội dung |
-|---|---|
-| `/` | **Landing công khai** (27KB) — "StudioAI — Tạo video AI, dịch & thêm phụ đề"; có bảng `/pricing`, `/terms`, `/privacy`, `/acceptable-use`, `/refund`, `/disclaimer`, `/about`, `/contact` |
-| `/dashboard` | **Tool/ứng dụng** (280KB, title "VideoAI Studio — Nền tảng tạo video AI chuyên nguyệp") — đăng nhập/đăng ký qua `/dashboard?login=1` và `/dashboard?login=1&tab=register` |
-| `/api/chat`, `/api/chat/history`, `/api/support`, `/api/admin/support`, `/api/admin/analytics`, `/api/assistant/article*`, `/api/assistant/presets` | Route mới của đợt 7 (OpenAPI tổng 92 route) |
-
-**Quy trình deploy đã dùng (nhớ khi deploy lần sau):**
-1. `docker compose stop web` → kiểm tra/stamp `alembic_version` cho khớp schema thật.
-2. `docker build -t dashboard-claude-wizardly-lamport-qfjxhi-web:latest .` — **KHÔNG dùng `docker compose build`** (BuildKit chặn quyền đọc Dockerfile: exit 0 nhưng không tạo image).
-3. `docker compose up -d --no-build` → chờ healthy.
-4. Verify: `integrity_check`, số users, `/api/health`, `/openapi.json`, login smoke (tài khoản giả → **401** chứ không phải 500), và `curl --resolve studioai.id.vn:443:104.21.19.240` (bỏ qua cache DNS Viettel).
-5. Script sẵn: `deploy/update.ps1` (build → recreate → chờ healthy → verify domain) — dùng cho các lần sau.
-
-### 8.5. Verify cuối cùng
-`https://studioai.id.vn/` → 200 (237KB); `/api/health` → 200 `{"ok":true}`; `/media/outputs/audio_concat_1_*.mp3` → 200 `audio/mpeg`; local `127.0.0.1:8001` → 200; containers `web` (healthy) + `redis` up.
+## FIX TIẾNG THOẠI / GIỮ FRAME VIDEO — 2026-11-13 (LOCAL CODE)
+
+User xác nhận output video vẫn tự đổi thoại, nhân vật, bối cảnh, vật thể và đôi khi tự phát English dù đã chọn tiếng Việt. Đã chỉnh code pipeline:
+
+- Video prompt không còn gửi lại prompt tạo ảnh dài/miêu tả/có thể chứa thoại; ưu tiên dữ liệu hành động/camera của cảnh, cấm thay người/trang phục/sản phẩm/bối cảnh/vật thể và yêu cầu video im lặng.
+- Dù người dùng chọn `voice=native`, tạo audio TTS từ đúng lời thoại storyboard bằng voice khớp `job.language`; nếu sinh TTS lỗi thì dừng scene thay vì âm thầm trả video tự nói sai. Sau khi gen video, xóa audio do model video tạo và mux audio kịch bản duy nhất.
+- Cảnh sản phẩm không người giữ nội dung keyframe sản phẩm, không sinh thoại/âm thanh.
+- Regression tests xác minh prompt/video mute, first_frame theo từng cảnh, TTS lang/line, strip-audio + mux audio. Full pytest: 244 passed, 7 skipped.
+- Đây là code ở workspace local; chưa build/restart container sau sửa lượt này và chưa deploy domain. Cần rebuild + restart local 8001 theo lệnh user trước khi test lại UI. Chưa có clip API mới chạy sau fix, nên chưa thể tuyên bố chất lượng model đã xác nhận.
+
+- Đã sửa requirements.txt để bỏ conflict markers và giữ đủ dependencies, nhằm Docker build thành công.
+- Đã build image local và recreate container web; không deploy domain.
+- Container `dashboard-claude-wizardly-lamport-qfjxhi-web-1` đang healthy; `/api/health` và `/openapi.json` trả HTTP 200.
+- Đã xác minh module trong container có `minimax.generate(... first_frame, subject_reference ...)` và pipeline truyền mỗi keyframe riêng.
+- Test sau cập nhật: `python -m pytest -q` → 244 passed, 7 skipped.
+- Chưa gọi API video trả phí. Chưa xác minh model/gateway có áp dụng field `subject_reference`; cần user chạy thử pipeline rồi kiểm tra clip thực tế.
+
+Phần mô tả cũ phía trên ghi các fix 1–6 là đề xuất; trạng thái thực tế hiện tại:
+
+- ĐÃ SỬA CODE: pipeline forward ảnh keyframe làm `first_frame` và ảnh reference user làm `subject_reference`; cảnh review người dùng ảnh nhân vật, cảnh chi tiết sản phẩm dùng ảnh sản phẩm. Xem `app/autopipeline.py` `_gen_scene_video()`.
+- ĐÃ SỬA CODE: MiniMax payload và OpenAI-style payload serialize subject reference; nếu không đọc được reference thì báo lỗi, không âm thầm bỏ qua. Xem `app/minimax.py`.
+- ĐÃ SỬA CODE: prompt video ưu tiên `video_prompt`; bổ sung chỉ dẫn giữ nguyên người/sản phẩm theo cảnh.
+- ĐÃ CÓ TEST: pipeline routing và data URI payload; `python -m pytest -q` → 243 passed, 7 skipped.
+- CHƯA XÁC MINH ĐẦU-CUỐI: chưa biết model video/gateway thật có hỗ trợ/forward `subject_reference`. Vì vậy chưa thể khẳng định video đầu ra đã giữ giống ảnh 100%; cần xác định model đang chọn và thử clip trên backend thực tế. Chưa gọi API tính phí.
+
+**Cách xử lý nếu gateway/model bỏ qua `subject_reference`:** giữ keyframe đã đúng làm first_frame (đã làm); cần dùng model video có native character/product reference conditioning. Prompt không thể tự bảo đảm nhận diện nhất quán nếu backend không hỗ trợ conditioning ảnh.

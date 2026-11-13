@@ -4,11 +4,7 @@ import tempfile
 from pathlib import Path
 
 from ..config import settings
-<<<<<<< HEAD
 from ..media import resolve, url_for, owner_dir_for_generation
-=======
-from ..media import resolve, url_for
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -121,13 +117,8 @@ def build_command(schema: dict, values: dict, out: Path, tmp: Path) -> list[str]
 
 
 def render(gen_id: int, schema: dict, base_video_url: str, values: dict) -> str:
-<<<<<<< HEAD
     out_dir = owner_dir_for_generation(gen_id)
     out = out_dir / f"gen_{gen_id}.mp4"
-=======
-    settings.outputs_dir.mkdir(parents=True, exist_ok=True)
-    out = settings.outputs_dir / f"gen_{gen_id}.mp4"
->>>>>>> 822cff7506133e411f5ff03e99930c611a7a19fa
     schema = {**schema, "_base_video": base_video_url}
     with tempfile.TemporaryDirectory() as td:
         cmd = build_command(schema, values, out, Path(td))

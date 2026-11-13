@@ -118,6 +118,38 @@ def test_register_and_every_user_tab_renders(web, browser):
     ctx.close()
 
 
+def test_my_template_details_stay_open_during_auto_refresh(web, browser):
+    ctx = browser.new_context()
+    page = ctx.new_page()
+    errors = watch(page)
+    page.goto(web.base + "/dashboard?login=1")
+    page.fill("#a-u", "admin")
+    page.fill("#a-p", "adminpass123")
+    page.click("#a-sub")
+    page.wait_for_selector("#u-name:has-text('admin')")
+    page.click(".ni[data-nav=mytemplates]")
+    page.locator("#my-detail").wait_for(state="attached")
+    page.wait_for_function("typeof pgMyTemplates === 'function' && typeof render === 'function'")
+    page.evaluate("""() => {
+      window.localStorage.setItem('tab', 'mytemplates');
+      window.tab = 'mytemplates';
+      window.mineTpls = [{id: 987654, title: 'Test project', category: 'full', base_video_url: '',
+        thumbnail_url: '', created_at: '', template_schema: {status: 'rendering', progress: 30,
+          step: 'Rendering test', source_feature: 'standard', keyframes: []}}];
+      const oldApi = window.api;
+      window.api = async (path) => path === '/api/generations' ? [] : path === '/api/generations/categories' ? [] : path === '/api/templates' ? [] : path === '/api/templates?mine=1' ? window.mineTpls : oldApi(path);
+      return pgMyTemplates();
+    }""")
+    page.wait_for_selector('[data-tpl-detail="987654"]')
+    page.click('[data-tpl-detail="987654"]')
+    page.wait_for_selector("#my-detail .card")
+    page.wait_for_timeout(3500)
+    assert page.locator("#my-detail .card").count() == 1
+    assert page.locator("#my-detail .card").inner_text().find("Rendering test") >= 0
+    assert not errors, errors
+    ctx.close()
+
+
 def test_topup_qr_flow_in_ui(web, browser):
     ctx = browser.new_context()
     page = ctx.new_page()
